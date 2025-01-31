@@ -1,7 +1,7 @@
-# Compile output from long runs
-# Sea lice ms 2024
+# Project: Sealice IP Ensemble
 # Tim Szewczyk
 # tim.szewczyk@sams.ac.uk
+# Compile output from long runs
 
 # These simulations are intended for hourly visualizations.
 # Output files are created for each hour, with a column for each simulation and 
@@ -12,31 +12,20 @@
 # setup -------------------------------------------------------------------
 
 library(tidyverse); library(glue)
+library(doFuture)
 library(furrr)
 library(carrier)
 library(sf)
 library(rstan)
+library(recipes)
 library(sevcheck) # devtools::install_github("Sz-Tim/sevcheck")
 library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
+source("code/00_fn.R")
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
 
-# mesh_sf <- st_read("data/WeStCOMS2_mesh.gpkg") |> mutate(vol_top50m=area*pmin(depth, 50))
-# mesh_fp <- st_read("data/WeStCOMS2_meshFootprint.gpkg")
-# mesh_i <- mesh_sf |> st_drop_geometry() |> select(i, area, vol_top50m)
 out_dir <- "D:/sealice_ensembling/out/sim_2023-MarMay"
 sim_i <- read_csv(glue("{out_dir}/sim_i.csv")) |>
   mutate(sim=paste0("sim_", i))
-site_i <- read_csv("data/farm_sites_2023-MarMay.csv")
-# init_df <- full_join(
-#   site_i,
-#   read_csv("data/lice_daily_2023-MarMay.csv", skip=1,
-#              col_names=c("sepaSite", paste0("d_", 0:60)))
-# ) |>
-#   pivot_longer(starts_with("d_"), names_to="date", values_to="density") |>
-#   mutate(date=ymd("2023-04-01") + as.numeric(str_sub(date, 3, -1))) |>
-#   left_join(read_csv("data/lice_biomass_2017-01-01_2023-12-31.csv") |>
-#               rename(fishTonnes=actualBiomassOnSiteTonnes))
-# dir.create(glue("{out_dir}/processed/hourly"), recursive=T, showWarnings=F)
 
 
 
@@ -54,26 +43,42 @@ if(FALSE) {
 
 # ensemble weights --------------------------------------------------------
 
-mod <- "ranef"
-out_ensMixRE <- readRDS(glue("out/ensembles/ensMix_3D_{mod}_stanfit.rds"))
-dat_ensMixRE <- readRDS(glue("out/ensembles/ensMix_3D_{mod}_standata.rds"))
+# out_ensMixRE <- readRDS(glue("out/ensembles/ensMix_all_sLonLatD4_FULL_stanfit.rds"))
+dat_ensMixRE <- readRDS(glue("out/ensembles/ensMix_all_sLonLatD4_FULL_standata.rds"))
+# ensMix_rec <- readRDS("out/ensembles/recipe_sLonLatD4_all.rds")
 
-iter_sub <- sample.int(length(rstan::extract(out_ensMixRE, pars="sigma")[[1]]), size=3000)
-b_p_post <- rstan::extract(out_ensMixRE, pars="b_p")[[1]]
+# Calculate ensemble weights at WeStCOMS2 mesh element centroids
+p_dir <- "out/ensembles/p_meshCentroids/"
+p_dir <- "D:/sealice_ensembling/out/ensembles/p_meshCentroids"
+# meshCentroid_df <- st_read("data/WeStCOMS2_mesh.gpkg") |>
+#   st_centroid() |>
+#   sevcheck::add_lonlat(drop_geom=T) |>
+#   as_tibble() |>
+#   select(i, lon, lat) |>
+#   rename(sepaSiteNum=i, easting=lon, northing=lat) |>
+#   bind_cols(map_dfc(dat_ensMixRE$sim_names, ~tibble(0) |> setNames(.x))) |>
+#   bind_cols(map_dfc(dat_ensMixRE$sim_names, ~tibble(0) |> setNames(paste0("c_", .x))))
+# 
+# plan(multisession, workers=18)
+# foreach(i=1:nrow(meshCentroid_df),
+#         .options.future=list(globals=structure(TRUE, add="p_dir"))) %dofuture% {
+#   t(make_predictions_ensMix_sLonLat(out_ensMixRE,
+#                                   newdata=bake(ensMix_rec, meshCentroid_df[i,]),
+#                                   iter=2000, seed=1003, mode="b_p")[1,,]) |>
+#     saveRDS(glue("{p_dir}/i_{meshCentroid_df$sepaSiteNum[i]}.rds"))
+# }
 
-rm(out_ensMixRE); gc()
+
 
 
 # particle densities ------------------------------------------------------
 
-date_seq <- seq(ymd("2023-05-03"), ymd("2023-05-31"), by=1) |> str_remove_all("-")
+plan(multisession, workers=18)
+date_seq <- seq(ymd("2023-04-01"), ymd("2023-05-31"), by=1) |> str_remove_all("-")
 ps_lims <- tibble(ens_mn=c(0,0),
                   ens_sd=c(0,0),
                   ens_CL005=c(0,0),
-                  ens_CL025=c(0,0),
-                  ens_CL975=c(0,0),
                   ens_CL995=c(0,0),
-                  ens_CI95width=c(0,0),
                   ens_CI99width=c(0,0))
 for(i in 1:length(date_seq)) {
   ps_i <- load_psteps_simSets(out_dir, 
@@ -84,27 +89,32 @@ for(i in 1:length(date_seq)) {
                               sim_i, ncores=1, liceScale=1, 
                               stage=paste0("Mature_", date_seq[i]), per_m2=TRUE, trans="4th_rt")
   i_ts <- grep("^t_", names(ps_i), value=T)
-  plan(multisession, workers=6)
   cat("Starting", date_seq[i])
   for(j in seq_along(i_ts)) {
     ps_j <- ps_i |> 
       filter(sim %in% dat_ensMixRE$sim_names) |>
+      filter(!is.na(i)) |>
       select("sim", "i", all_of(i_ts[j])) |>
+      drop_na() |>
       pivot_wider(names_from=sim, values_from=starts_with("t_")) 
     if(any(!is.na(ps_j$i))) {
       ps_j_mx <- ps_j |> select(all_of(dat_ensMixRE$sim_names)) |> as.matrix()
       ps_j_mx[is.na(ps_j_mx)] <- 0
+      
+      # calculate ensIP in parallel 
+      ensIP <- foreach(k=1:nrow(ps_j), .combine=rbind, .inorder=TRUE, 
+                       .options.future=list(globals=structure(TRUE, add=c("ps_j_mx", "p_dir", "ps_j")))) %dofuture% {
+        ens_k <- ps_j_mx[k,,drop=F] %*% readRDS(glue("{p_dir}i_{as.integer(ps_j$i[k])}.rds"))
+        c(mean(ens_k), sd(ens_k), quantile(ens_k, probs=c(0.005, 0.995)))
+      }
+      gc()
+      
       ps_j <- ps_j |>
-        mutate(row=row_number()) |>
-        mutate(ens=future_map(row, ~apply(b_p_post[iter_sub,], 1, function(x) sum(x * ps_j_mx[.x,]))),
-               ens_mn=map_dbl(ens, mean),
-               ens_sd=map_dbl(ens, sd),
-               ens_CL005=map_dbl(ens, ~quantile(.x, probs=0.005)),
-               ens_CL025=map_dbl(ens, ~quantile(.x, probs=0.025)),
-               ens_CL975=map_dbl(ens, ~quantile(.x, probs=0.975)),
-               ens_CL995=map_dbl(ens, ~quantile(.x, probs=0.995)),
-               ens_CI95width=ens_CL975-ens_CL025,
-               ens_CI99width=ens_CL995-ens_CL005) |>
+        mutate(ens_mn=ensIP[,1],
+               ens_sd=ensIP[,2],
+               ens_CL005=ensIP[,3],
+               ens_CL995=ensIP[,4],
+               ens_CI99width=ensIP[,4]-ensIP[,3]) |>
         select(i, starts_with("ens_"))
       gc()
       ps_j |>
@@ -112,10 +122,7 @@ for(i in 1:length(date_seq)) {
       ps_lims$ens_mn <- range(c(ps_lims$ens_mn, range(ps_j$ens_mn)))
       ps_lims$ens_sd <- range(c(ps_lims$ens_sd, range(ps_j$ens_sd)))
       ps_lims$ens_CL005 <- range(c(ps_lims$ens_CL005, range(ps_j$ens_CL005)))
-      ps_lims$ens_CL025 <- range(c(ps_lims$ens_CL025, range(ps_j$ens_CL025)))
-      ps_lims$ens_CL975 <- range(c(ps_lims$ens_CL975, range(ps_j$ens_CL975)))
       ps_lims$ens_CL995 <- range(c(ps_lims$ens_CL995, range(ps_j$ens_CL995)))
-      ps_lims$ens_CI95width <- range(c(ps_lims$ens_CI95width, range(ps_j$ens_CI95width))) 
       ps_lims$ens_CI99width <- range(c(ps_lims$ens_CI99width, range(ps_j$ens_CI99width))) 
     }
     cat("", j)

@@ -1,4 +1,7 @@
-
+# Project: Sealice IP Ensemble
+# Tim Szewczyk
+# tim.szewczyk@sams.ac.uk
+# Helper functions
 
 
 

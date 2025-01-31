@@ -1,7 +1,7 @@
-# Compile fish farm data
-# Sea lice ms 2024
+# Project: Sealice IP Ensemble
 # Tim Szewczyk
 # tim.szewczyk@sams.ac.uk
+# Compile fish farm data
 
 
 # setup
@@ -77,7 +77,7 @@ sites_validation <- sites.i |>
 biomass_df <- read_csv("data/aquaculture_scot/biomass_monthly_reports.csv") |>
   mutate(year=year(date)) |>
   filter(waterType=="Seawater",
-         between(date, ymd("2017-01-01"), ymd("2023-12-31"))) |>
+         between(date, ymd("2017-01-01"), ymd("2024-12-31"))) |>
   select(-siteName, -easting, -northing) |>
   inner_join(sites.i |> st_drop_geometry(), by="sepaSite") |>
   arrange(sepaSite, date)
@@ -164,7 +164,7 @@ default_df <- bind_rows(
 
 biomass_interp <- left_join(
   expand_grid(sepaSite=unique(biomass_df$sepaSite),
-              date=seq(ymd("2017-01-01"), ymd("2023-12-31"), by=1)) |>
+              date=seq(ymd("2017-01-01"), ymd("2024-12-31"), by=1)) |>
     mutate(year=year(date), month=month(date), day=day(date)),
   biomass_df |>
     st_drop_geometry() |>
@@ -173,34 +173,27 @@ biomass_interp <- left_join(
     select(sepaSite,
            year, month,
            actualBiomassOnSiteTonnes) |>
-    full_join(expand_grid(sepaSite=unique(biomass_df$sepaSite),
-                          year=2017:2023,
-                          month=1:12,
-                          day=1)) |>
-    mutate(actualBiomassOnSiteTonnes=replace_na(actualBiomassOnSiteTonnes, 0))) |>
+    complete(sepaSite, nesting(year, month), fill=list(actualBiomassOnSiteTonnes=0)) |>
+    mutate(day=1)) |>
   # assume 0 biomass continues through the end of the month
   group_by(sepaSite, year, month) |>
   mutate(actualBiomassOnSiteTonnes=if_else(is.na(actualBiomassOnSiteTonnes) & 
                                              max(actualBiomassOnSiteTonnes, na.rm=T)==0, 
                                            0, 
                                            actualBiomassOnSiteTonnes)) |>
-  # interpolate biomass to day (0 until first non-0 value, linear between values)
+  # interpolate biomass to day:
+  #   0 until first non-0 value, linear between values, constant to end
   group_by(sepaSite) |>
-  mutate(actualBiomassOnSiteTonnes=as.numeric(na.fill(zoo(actualBiomassOnSiteTonnes), c(0, "extend", NA)))) |>
+  mutate(actualBiomassOnSiteTonnes=as.numeric(na.fill(zoo(actualBiomassOnSiteTonnes), 
+                                                      c(0, "extend", "extend")))) |>
   filter(any(actualBiomassOnSiteTonnes > 0)) |>
-  # set biomass constant until end of final reported month, assume 0 after
-  group_by(sepaSite, year, month) |>
-  mutate(actualBiomassOnSiteTonnes=if_else(is.na(actualBiomassOnSiteTonnes), 
-                                           median(actualBiomassOnSiteTonnes, na.rm=T),
-                                           actualBiomassOnSiteTonnes),
-         actualBiomassOnSiteTonnes=replace_na(actualBiomassOnSiteTonnes, 0)) |>
   ungroup()
 
 lice_interp <- lice_df |>
   mutate(week=week(weekBeginning),
          year=year(weekBeginning)) |>
   right_join(expand_grid(sepaSite=unique(biomass_df$sepaSite),
-                        year=2017:2023,
+                        year=2017:2024,
                         week=1:53)) |>
   mutate(weekBeginning=if_else(is.na(weekBeginning),
                                ymd(paste0(year, "-01-01"))+7*(week-1),
@@ -246,19 +239,19 @@ out.df |>
   select(sepaSite, date, weeklyAverageAf, actualBiomassOnSiteTonnes, total_AF) |>
   write_csv(glue("data/lice_biomass_{min(out.df$date)}_{max(out.df$date)}.csv"))
 out.df |>
-  filter(date >= "2019-04-01") |>
+  filter(date >= "2021-01-01") |>
   group_by(sepaSite) |>
   summarise() |>
   left_join(sites.i |> st_drop_geometry() |> select(sepaSite, easting, northing)) |>
   write_csv("data/farm_sites.csv")
 out.df |>
-  filter(date >= "2019-04-01") |>
+  filter(date >= "2021-01-01") |>
   mutate(date.c=str_remove_all(date, "-")) |>
   select(sepaSite, date.c, total_AF) |>
   pivot_wider(names_from=date.c, values_from=total_AF) |>
   filter(sepaSite %in% read_csv("data/farm_sites.csv")$sepaSite) |>
   mutate(across(where(is.numeric), ~replace_na(.x, 0))) |>
-  write_csv(glue("data/lice_daily_2019-04-01_{max(out.df$date)}.csv"))
+  write_csv(glue("data/lice_daily_2021-01-01_{max(out.df$date)}.csv"))
 
 out.df |>
   filter(year(date) == 2023) |>
@@ -296,42 +289,43 @@ out.df |>
   mutate(across(where(is.numeric), ~replace_na(.x, 0))) |>
   write_csv(glue("data/lice_daily_2023-MarMay.csv"))
 
+out.df |>
+  filter(between(date, ymd("2024-03-17"), ymd("2024-05-31"))) |>
+  group_by(sepaSite) |>
+  summarise(active=any(actualBiomassOnSiteTonnes>0)) |>
+  ungroup() |>
+  filter(active) |>
+  select(-active) |>
+  left_join(sites.i |> st_drop_geometry() |> select(sepaSite, easting, northing)) |>
+  write_csv(glue("data/farm_sites_2024-MarMay.csv"))
+out.df |>
+  filter(between(date, ymd("2024-03-17"), ymd("2024-05-31"))) |>
+  mutate(date.c=str_remove_all(date, "-")) |>
+  select(sepaSite, date.c, total_AF) |>
+  pivot_wider(names_from=date.c, values_from=total_AF) |>
+  filter(sepaSite %in% read_csv("data/farm_sites_2024-MarMay.csv")$sepaSite) |>
+  mutate(across(where(is.numeric), ~replace_na(.x, 0))) |>
+  write_csv(glue("data/lice_daily_2024-MarMay.csv"))
 
 
 
-# site characteristics ----------------------------------------------------
+# farm catchment footprints and volumes
+mesh_sf <- st_read("data/WeStCOMS2_mesh.gpkg")
+connect_dist <- c(100, 250, 500) # radius in m
+for(i in connect_dist) {
+  mesh_sf |>
+    st_intersection(read_csv("data/farm_sites.csv") |>
+                      st_as_sf(coords=c("easting", "northing"), crs=27700) |>
+                      st_buffer(dist=i)) %>%
+    mutate(area=st_area(.)) |>
+    st_drop_geometry() |>
+    mutate(vol=area*depth,
+           vol_30m=area*pmin(depth, 30)) |>
+    group_by(sepaSite) |>
+    summarise(area_m2=as.numeric(sum(area)),
+              vol_m3=as.numeric(sum(vol)),
+              vol30m_m3=as.numeric(sum(vol_30m))) |>
+    left_join(read_csv("data/farm_sites.csv")) |>
+    write_csv(glue("data/farm_sites_{i}m_areas.csv"))
+}
 
-site_sf <- read_csv("data/farm_sites.csv") |> 
-  st_as_sf(coords=c("easting", "northing"), crs=27700, remove=F) %>%
-  mutate(fetch=raster::extract(raster::raster("data/log10_eu200m1a.tif"), ., 
-                               small=T, buffer=1e2, fun=mean)) %>%
-  mutate(fetch=if_else(is.na(fetch),
-                       raster::extract(raster::raster("data/log10_eu200m1a.tif"), ., 
-                                       small=T, buffer=5e2, fun=mean),
-                       fetch))
-write_csv(site_sf |> st_drop_geometry(), "data/farm_sites_fetch.csv")
-
-# load ocean raster
-mesh.r <- raster("data/ScotlandOcean_footprint.tif")
-crs(mesh.r) <- CRS("+init=epsg:27700")
-out_paths <- shortest_paths(mesh.r, 
-                            site_sf)
-write_csv(out_paths |> 
-            as_tibble() |>
-            mutate(origins=site_sf$sepaSite[origins],
-                   destinations=site_sf$sepaSite[destinations]), 
-          "data/site_pairwise_distances.csv")
-
-
-
-
-
-
-
-# WeStCOMS WSPZs ----------------------------------------------------------
-
-st_join(st_read("data/WeStCOMS2_mesh.gpkg") |> select(i, geom), 
-        st_read("data/Wild_Salmonid_Protection_Zones_WGS84.gpkg") |> 
-          st_transform(27700)) |>
-  st_drop_geometry() |>
-  write_csv("data/WeStCOMS2_WSPZ_lookup.csv")
