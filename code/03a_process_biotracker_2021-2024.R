@@ -46,9 +46,22 @@ if(FALSE) {
 
 
 
+
+
+# farm conditions ---------------------------------------------------------
+
+env_df <- dirf(glue("{out_dir}/sim_01/"), "siteConditions") |>
+  map_dfr(~read_csv(.x, show_col_types=F) |>
+            select(site, depth, u, v, w, uv, salinity, temperature) |>
+            mutate(date=ymd(str_split_fixed(basename(.x), "_", 3)[,2])))
+saveRDS(env_df, glue("{out_dir}/processed/env_df.rds"))
+
+
+
 # particle densities ------------------------------------------------------
 
-ps_wide_rtrt <- load_psteps_simSets(out_dir, mesh_i, sim_i, ncores=30, liceScale=1/168, trans="4th_rt")
+ps_wide_rtrt <- load_psteps_simSets(out_dir, mesh_i, sim_i, ncores=30, 
+                                    liceScale=1/168, trans="4th_rt")
 saveRDS(ps_wide_rtrt, glue("{out_dir}/processed/psteps_wide_rtrt.rds"))
 
 
