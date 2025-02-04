@@ -1,7 +1,7 @@
-# Forecasting ensembles
-# 
+# Project: Sealice IP Ensemble
 # Tim Szewczyk
 # tim.szewczyk@sams.ac.uk
+# Forecasting ensembles
 
 # This script tunes and validates forecasting ensembles, selecting the best 
 # performing model. Optimization is performed separately for predicting the
@@ -18,10 +18,11 @@ library(tidymodels); #library(DALEXtra); library(butcher)
 # library(bonsai); # lightgbm
 library(finetune)
 library(future)
+library(sevcheck)
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
 options(tidymodels.dark = TRUE)
 
-gridSize <- 10
+gridSize <- 25#25
 cores <- 10
 
 
@@ -33,7 +34,8 @@ cores <- 10
 # compile dataset ---------------------------------------------------------
 
 ensFull_df <- read_csv("out/valid_df.csv") |>
-  mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5))
+  mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5)) |>
+  left_join(read_csv("data/farm_sites.csv"))
 
 sim_i <- read_csv("out/sim_2019-2023/sim_i.csv") |>
   mutate(sim=paste0("sim_", i),
@@ -44,7 +46,7 @@ sim_i <- read_csv("out/sim_2019-2023/sim_i.csv") |>
   select(sim, lab_short, lab) |>
   bind_rows(
     tibble(sim=c("predF1", "predF5", "predMix", "sim_avg2D", "sim_avg3D", "null"),
-           lab_short=c("Ens['Fc-1']", "Ens['Fc-5']", "Ens['Mix']", "Mean2D", "Mean3D", "Null"),
+           lab_short=c("Ens['Fc-1']", "Ens['Fc-2']", "Ens['Mix']", "Mean2D", "Mean3D", "Null"),
            lab=c("Ens['Fc-1']", "Ens['Fc-5']", "Ens['Mix']", "Mean2D", "Mean3D", "Null"))
   ) |>
   mutate(lab=factor(lab, 
@@ -56,31 +58,81 @@ sim_i <- read_csv("out/sim_2019-2023/sim_i.csv") |>
 
 fit_df <- ensFull_df |>
   select(rowNum, sepaSite, sepaSiteNum, productionCycleNumber, year, date,
-         licePerFish_rtrt, lice_g05, contains("yday"),
-         any_of(filter(sim_i, lab_short %in% c("3D"))$sim),
-         any_of(paste0("c_", filter(sim_i, lab_short %in% c("3D"))$sim)))
+         easting, northing, licePerFish_rtrt, lice_g05, 
+         any_of(filter(sim_i, lab_short %in% c("3D", "2D"))$sim)) |>
+  arrange(sepaSite, date) |>
+  drop_na()
 rm(ensFull_df); gc()
 
 
-advance <- c(1, 5)
+
+# Ensemble formulas -------------------------------------------------------
+
+base_recipe <- recipe(licePerFish_rtrt ~ ., data=fit_df) |>
+  step_harmonic(date, frequency=1, cycle_size=365.24) |>
+  step_interact(terms= ~date_sin_1:date_cos_1) |>
+  step_interact(terms= ~easting:northing) |>
+  step_bs(easting, deg_free=tune("bs_E_df")) |>
+  step_bs(northing, deg_free=tune("bs_N_df")) |>
+  step_bs(easting_x_northing, deg_free=tune("bs_EN_df")) |>
+  update_role(c(rowNum, starts_with("sepaSite"), productionCycleNumber, year,
+                lice_g05, licePerFish_rtrt, CV_k), new_role="not used") |>
+  update_role_requirements("not used", bake=F)
+
+recipes <- list(
+  base=base_recipe,
+  base_3D=base_recipe |>
+    update_role(any_of(paste0("sim_", 17:20)), new_role="not used"),
+  PCA=base_recipe |>
+    step_pca(starts_with("sim") & has_role("predictor"), num_comp=tune()),
+  PCA_3D=base_recipe |>
+    update_role(any_of(paste0("sim_", 17:20)), new_role="not used") |>
+    step_pca(starts_with("sim") & has_role("predictor"), num_comp=tune())
+)
+
+
+
+# Candidate ensemble models -----------------------------------------------
+# Ridge, Elastic Net, Lasso, Random Forest, XGBoost, Neural Network, CART, KNN
+licePerFish_models <- list(
+  enet=linear_reg(penalty=tune(), mixture=tune()) |>
+    set_engine("glmnet") |> set_mode("regression"),
+  mlp=mlp(hidden_units=tune(), penalty=tune(), epochs=tune()) |>
+    set_engine("nnet") |> set_mode("regression"),
+  rf=rand_forest(trees=tune(), min_n=tune()) |>
+    set_engine("randomForest") |> set_mode("regression")
+)
+
+liceBinary_models <- list(
+  enet=logistic_reg(penalty=tune(), mixture=tune()) |>
+    set_engine("glmnet") |> set_mode("classification"),
+  mlp=mlp(hidden_units=tune(), penalty=tune(), epochs=tune()) |>
+    set_engine("nnet") |> set_mode("classification"),
+  rf=rand_forest(trees=tune(), min_n=tune()) |>
+    set_engine("randomForest") |> set_mode("classification")
+)
+
+
+
+
+advance <- c(1)
 for(i in seq_along(advance)) {
   # expanding window cross-validation: simulate weekly forecasts within each year
-  # - fit model each week using all non-focus years + that year up to the week
-  #   and predict the on-farm lice 1 week and 5 weeks into the future
+  #   Fit model each week using all non-focus years + that year up to the week
+  #   and predict the on-farm lice i weeks into the future
   
-  
-  # folds <- group_vfold_cv(fit_df, group=year)
-  # fold_rowNums <- tibble(.row=fit_df$rowNum, rowNum=fit_df$rowNum)
-  years <- unique(fit_df$year)
-  folds_ls <- vector("list", length(years))
-  for(y in seq_along(years)) {
-    fit_df_y <- fit_df |>
-      mutate(date_mod=if_else(year==years[y], date+dyears(12), date)) |>
+  # TODO: Update sliding period for k instead of year (skip still set to year)
+  # TODO: Stopped here and did not try it.
+  folds <- unique(fit_df$CV_k)
+  folds_ls <- vector("list", length(folds))
+  for(k in seq_along(folds)) {
+    fit_df_k <- fit_df |>
+      mutate(date_mod=if_else(CV_k==folds[k], date+dyears(12), date)) |>
       arrange(date_mod)
-    folds_ls[[y]] <- sliding_period(fit_df_y, index=date_mod, period="week", lookback=Inf, complete=F,
-                                    skip=max(which(year(unique(fit_df_y$date_mod)) < 2025))-advance[i],
+    folds_ls[[k]] <- sliding_period(fit_df_k, index=date_mod, period="week", lookback=Inf, complete=F,
+                                    skip=max(which(year(unique(fit_df_k$date_mod)) < 2025))-advance[i],
                                     assess_start=advance[i], assess_stop=advance[i])
-    rm(fit_df_y)
+    rm(fit_df_k)
   }
   folds_merged <- reduce(folds_ls, bind_rows) |>
     filter(map_lgl(splits, ~length(.x$out_id)>0))
@@ -92,204 +144,134 @@ for(i in seq_along(advance)) {
     unnest(c(".row", "rowNum"))
   
   
-  # Ensemble formulas -------------------------------------------------------
-  mod_terms <- list(
-    # sim=paste(grep("^sim", names(fit_df), value=T), collapse=" + "),
-    # sim_date=paste(grep("(^sim|yday)", names(fit_df), value=T), collapse=" + "),
-    # c_sim=paste(grep("c_sim", names(fit_df), value=T), collapse=" + "),
-    c_sim_date=paste(grep("(c_sim|yday)", names(fit_df), value=T), collapse=" + ")#,
-    # sim_3D=paste(grep("^sim", names(fit_df_3D), value=T), collapse=" + "),
-    # sim_date_3D=paste(grep("(^sim|yday)", names(fit_df_3D), value=T), collapse=" + "),
-    # c_sim_3D=paste(grep("c_sim", names(fit_df_3D), value=T), collapse=" + "),
-    # c_sim_date_3D=paste(grep("(c_sim|yday)", names(fit_df_3D), value=T), collapse=" + ")
-  )
-  # 1. licePerFish_rtrt ~ IP + yday
-  licePerFish_form <- map(mod_terms, ~formula(paste("licePerFish_rtrt ~", .x)))
-  # 1. lice_g05 ~ IP + yday
-  liceBinary_form <- map(mod_terms, ~formula(paste("lice_g05 ~", .x)))
-  
-  # Candidate ensemble models -----------------------------------------------
-  # Ridge, Elastic Net, Lasso, Random Forest, XGBoost, Neural Network, CART, KNN
-  licePerFish_models <- list(
-    enet=linear_reg(penalty=tune(), mixture=tune()) |>
-      set_engine("glmnet") |> set_mode("regression"),
-    rf=rand_forest(trees=tune(), min_n=tune()) |>
-      set_engine("randomForest") |> set_mode("regression"),
-    # xgb=boost_tree(tree_depth=tune(), trees=tune(), learn_rate=tune(), mtry=tune(),
-    #                min_n=tune(), loss_reduction=tune(), sample_size=tune()) |>
-    #   set_engine("xgboost") |> set_mode("regression"),
-    # lxgb=boost_tree(tree_depth=tune(), trees=1000, stop_iter=tune(), learn_rate=tune(), mtry=tune(),
-    #                 min_n=tune(), loss_reduction=tune(), sample_size=tune()) |>
-    #   set_engine("lightgbm", num_leaves=tune()) |> set_mode("regression"),
-    # bart=bart(trees=tune(), prior_terminal_node_coef=tune(),
-    #           prior_terminal_node_expo=tune(), prior_outcome_range=tune()) |>
-    #   set_engine("dbarts") |> set_mode("regression"),
-    # mars=bag_mars(num_terms=tune(), prod_degree=tune(), prune_method=tune()) |>
-    #   set_engine("earth") |> set_mode("regression")#,
-    # svmL=svm_linear(cost=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("regression"),
-    # svmP=svm_poly(cost=tune(), degree=tune(), scale_factor=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("regression"),
-    # svmR=svm_rbf(cost=tune(), rbf_sigma=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("regression"),
-    mlp=mlp(hidden_units=tune(), penalty=tune(), epochs=tune()) |>
-      set_engine("nnet") |> set_mode("regression")#,
-    # knn=nearest_neighbor(neighbors=tune(), weight_func=tune(), dist_power=tune()) |>
-    #   set_engine("kknn") |> set_mode("regression")
-  )
-  
-  liceBinary_models <- list(
-    enet=logistic_reg(penalty=tune(), mixture=tune()) |>
-      set_engine("glmnet") |> set_mode("classification"),
-    rf=rand_forest(trees=tune(), min_n=tune()) |>
-      set_engine("randomForest") |> set_mode("classification"),
-    # xgb=boost_tree(tree_depth=tune(), trees=tune(), learn_rate=tune(), mtry=tune(),
-    #                min_n=tune(), loss_reduction=tune(), sample_size=tune()) |>
-    #   set_engine("xgboost") |> set_mode("classification"),
-    # lxgb=boost_tree(tree_depth=tune(), trees=1000, stop_iter=tune(), learn_rate=tune(), mtry=tune(),
-    #                 min_n=tune(), loss_reduction=tune(), sample_size=tune()) |>
-    #   set_engine("lightgbm", num_leaves=tune()) |> set_mode("classification"),
-    # bart=bart(trees=tune(), prior_terminal_node_coef=tune(),
-    #           prior_terminal_node_expo=tune(), prior_outcome_range=tune()) |>
-    #   set_engine("dbarts") |> set_mode("classification"),
-    # mars=bag_mars(num_terms=tune(), prod_degree=tune(), prune_method=tune()) |>
-    #   set_engine("earth") |> set_mode("classification"),
-    # nbayes=naive_Bayes(smoothness=tune(), Laplace=tune()) |>
-    #   set_engine("klaR") |> set_mode("classification"),
-    # svmL=svm_linear(cost=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("classification"),
-    # svmP=svm_poly(cost=tune(), degree=tune(), scale_factor=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("classification"),
-    # svmR=svm_rbf(cost=tune(), rbf_sigma=tune(), margin=tune()) |>
-    #   set_engine("kernlab") |> set_mode("classification"),
-    mlp=mlp(hidden_units=tune(), penalty=tune(), epochs=tune()) |>
-      set_engine("nnet") |> set_mode("classification")#,
-    # knn=nearest_neighbor(neighbors=tune(), weight_func=tune(), dist_power=tune()) |>
-    #   set_engine("kknn") |> set_mode("classification")
-  )
-  
-  
   # Tune ensembles ----------------------------------------------------------
-  # licePerFish
-  plan(multisession, workers=cores)
-  licePerFish_wfs <- workflow_set(
-    preproc=licePerFish_form,
-    models=licePerFish_models
-  ) |>
-    workflow_map(#"tune_grid",
-      "tune_race_anova", 
-      resamples=folds, 
-      grid=gridSize,
-      metrics=metric_set(rmse),
-      control=control_race(save_pred=T, 
-                           save_workflow=T,
-                           parallel_over="everything",
-                           verbose=F,
-                           verbose_elim=T,
-                           burn_in=30),
-      # control=control_grid(save_pred=T,
-      #                      save_workflow=T,
-      #                      parallel_over="everything"),
-      verbose=T)
-  plan(sequential)
-  cat(format(Sys.time(), "%F %T"), "  Finished licePerFish tuning, advance:", advance[i], "\n")
-  autoplot(licePerFish_wfs) + scale_colour_brewer(type="qual", palette="Paired")
-  ggsave(glue("figs/licePerFish_ranks_{advance[i]}wk.png"), width=15, height=5)
-  
-  for(m in c("rmse")) {
-    map(m, 
-        ~rank_results(licePerFish_wfs, rank_metric=.x, select_best=TRUE) |>
-          filter(.metric==.x) |>
-          select(rank, .metric, mean, model, wflow_id, .config))
-    map(m,
-        ~rank_results(licePerFish_wfs, rank_metric=.x, select_best=TRUE) |>
-          filter(.metric==.x) |>
-          select(rank, .metric, mean, model, wflow_id, .config)) |>
-      saveRDS(glue("out/ensembles/licePerFish_ranks_{advance[i]}wk_{m}.rds"))
+  j <- 1
+  if(j==1) {
+    # licePerFish
+    if(get_os()=="windows") {
+      plan(multisession, workers=cores)
+    } else {
+      plan(multicore, workers=cores)
+    }
+    licePerFish_wfs <- workflow_set(
+      preproc=map(recipes, ~.x |> update_role(licePerFish_rtrt, new_role="outcome")),
+      models=licePerFish_models
+    ) |>
+      filter(!grepl("^PCA_.*enet", wflow_id)) |>
+      filter(grepl("enet", wflow_id)) |>
+      workflow_map("tune_grid",
+                   resamples=folds, 
+                   grid=gridSize,
+                   metrics=metric_set(rmse),
+                   control=control_grid(save_pred=T,
+                                        save_workflow=T,
+                                        parallel_over="everything"),
+                   verbose=T)
+    plan(sequential)
+    cat(format(Sys.time(), "%F %T"), "  Finished licePerFish tuning, advance:", advance[i], "\n")
+    autoplot(licePerFish_wfs) + scale_colour_brewer(type="qual", palette="Paired")
+    ggsave(glue("figs/licePerFish_ranks_{advance[i]}wk.png"), width=15, height=5)
+    
+    for(m in c("rmse")) {
+      map(m, 
+          ~rank_results(licePerFish_wfs, rank_metric=.x, select_best=TRUE) |>
+            filter(.metric==.x) |>
+            select(rank, .metric, mean, model, wflow_id, .config))
+      map(m,
+          ~rank_results(licePerFish_wfs, rank_metric=.x, select_best=TRUE) |>
+            filter(.metric==.x) |>
+            select(rank, .metric, mean, model, wflow_id, .config)) |>
+        saveRDS(glue("out/ensembles/licePerFish_ranks_{advance[i]}wk_{m}.rds"))
+      gc()
+      
+      ## Best fits
+      licePerFish_best_mod <- rank_results(licePerFish_wfs, rank_metric=m, select_best=TRUE)
+      licePerFish_best_wf <- licePerFish_wfs |> 
+        extract_workflow(licePerFish_best_mod$wflow_id[1])
+      licePerFish_best_results <- licePerFish_wfs |> 
+        extract_workflow_set_result(id=licePerFish_best_mod$wflow_id[1]) |>
+        select_best(metric=m)
+      licePerFish_final_fit <- licePerFish_best_wf |>
+        finalize_workflow(licePerFish_best_results) |>
+        fit(data=fit_df)
+      licePerFish_best_preds <- licePerFish_wfs |> 
+        extract_workflow_set_result(id=licePerFish_best_mod$wflow_id[1]) |>
+        collect_predictions() |>
+        filter(.config==licePerFish_best_mod$.config[1]) |>
+        left_join(fold_rowNums) 
+      
+      saveRDS(licePerFish_best_wf, glue("out/ensembles/licePerFish_best_wf_{advance[i]}wk_{m}.rds"))
+      saveRDS(licePerFish_best_results, glue("out/ensembles/licePerFish_best_results_{advance[i]}wk_{m}.rds"))
+      saveRDS(licePerFish_final_fit, glue("out/ensembles/licePerFish_best_fitted_{advance[i]}wk_{m}.rds"))
+      write_csv(licePerFish_best_preds, glue("out/ensembles/CV_ensFc-{advance[i]}_{m}.csv")) 
+    }
+    rm(licePerFish_wfs); rm(licePerFish_best_wf); rm(licePerFish_best_results)
+    rm(licePerFish_best_mod); rm(licePerFish_final_fit); rm(licePerFish_best_preds)
     gc()
-    
-    ## Best fits
-    licePerFish_best_mod <- rank_results(licePerFish_wfs, rank_metric=m, select_best=TRUE)
-    licePerFish_best_wf <- licePerFish_wfs |> 
-      extract_workflow(licePerFish_best_mod$wflow_id[1])
-    licePerFish_best_results <- licePerFish_wfs |> 
-      extract_workflow_set_result(id=licePerFish_best_mod$wflow_id[1]) |>
-      select_best(metric=m)
-    licePerFish_final_fit <- licePerFish_best_wf |>
-      finalize_workflow(licePerFish_best_results) |>
-      fit(data=fit_df)
-    licePerFish_best_preds <- licePerFish_wfs |> 
-      extract_workflow_set_result(id=licePerFish_best_mod$wflow_id[1]) |>
-      collect_predictions() |>
-      filter(.config==licePerFish_best_mod$.config[1]) |>
-      left_join(fold_rowNums) 
-    
-    saveRDS(licePerFish_best_wf, glue("out/ensembles/licePerFish_best_wf_{advance[i]}wk_{m}.rds"))
-    saveRDS(licePerFish_best_results, glue("out/ensembles/licePerFish_best_results_{advance[i]}wk_{m}.rds"))
-    saveRDS(licePerFish_final_fit, glue("out/ensembles/licePerFish_best_fitted_{advance[i]}wk_{m}.rds"))
-    write_csv(licePerFish_best_preds, glue("out/ensembles/CV_ensFc-{advance[i]}_{m}.csv")) 
   }
   
   
   
-  # liceBinary
-  plan(multisession, workers=cores)
-  liceBinary_wfs <- workflow_set(
-    preproc=liceBinary_form,
-    models=liceBinary_models
-  ) |>
-    workflow_map(#"tune_grid",
-      "tune_race_anova",
-      resamples=folds,
-      grid=gridSize,
-      metrics=metric_set(roc_auc),
-      control=control_race(save_pred=T, 
-                           save_workflow=T,
-                           parallel_over="everything",
-                           verbose=F,
-                           verbose_elim=T,
-                           burn_in=30,
-                           event_level="second"),
-      # control=control_grid(save_pred=T,
-      #                      save_workflow=T,
-      #                      parallel_over="everything",
-      #                      event_level="second"),
-      verbose=T)
-  plan(sequential)
-  cat(format(Sys.time(), "%F %T"), "  Finished liceBinary tuning, advance:", advance[i], "\n")
-  autoplot(liceBinary_wfs) + scale_colour_brewer(type="qual", palette="Paired")
-  ggsave(glue("figs/liceBinary_ranks_{advance[i]}wk.png"), width=15, height=5)
-  
-  for(m in c("roc_auc")) {
+  j <- 2
+  if(j==2) {
+    # liceBinary
+    if(get_os()=="windows") {
+      plan(multisession, workers=cores)
+    } else {
+      plan(multicore, workers=cores)
+    }
+    liceBinary_wfs <- workflow_set(
+      preproc=map(recipes, ~.x |> update_role(lice_g05, new_role="outcome")),
+      models=liceBinary_models
+    ) |>
+      filter(!grepl("^PCA_.*enet", wflow_id)) |>
+      filter(grepl("enet", wflow_id)) |>
+      workflow_map("tune_grid",
+                   resamples=folds,
+                   grid=gridSize,
+                   metrics=metric_set(roc_auc),
+                   control=control_grid(save_pred=T,
+                                        save_workflow=T,
+                                        parallel_over="everything",
+                                        event_level="second"),
+                   verbose=T)
+    plan(sequential)
+    cat(format(Sys.time(), "%F %T"), "  Finished liceBinary tuning, advance:", advance[i], "\n")
+    autoplot(liceBinary_wfs) + scale_colour_brewer(type="qual", palette="Paired")
+    ggsave(glue("figs/liceBinary_ranks_{advance[i]}wk.png"), width=15, height=5)
     
-    # Best fits
-    liceBinary_best_mod <- collect_metrics(liceBinary_wfs) |>
-      filter(.metric==m) |>
-      arrange(desc(mean)) |>
-      slice_max(mean, n=1, with_ties=F) |>
-      select(.metric, mean, model, wflow_id, .config)
-    liceBinary_best_wf <- liceBinary_wfs |>
-      extract_workflow(liceBinary_best_mod$wflow_id[1])
-    liceBinary_best_results <- liceBinary_wfs |>
-      extract_workflow_set_result(id=liceBinary_best_mod$wflow_id[1]) |>
-      select_best(metric=m)
-    liceBinary_final_fit <- liceBinary_best_wf |>
-      finalize_workflow(liceBinary_best_results) |>
-      fit(data=fit_df)
-    liceBinary_best_preds <- liceBinary_wfs |>
-      extract_workflow_set_result(id=liceBinary_best_mod$wflow_id[1]) |>
-      collect_predictions() |>
-      filter(.config==liceBinary_best_mod$.config[1]) |>
-      left_join(fold_rowNums)
-    
-    saveRDS(liceBinary_best_mod, glue("out/ensembles/liceBinary_ranks_{advance[i]}wk_{m}.rds"))
-    saveRDS(liceBinary_best_wf, glue("out/ensembles/liceBinary_best_wf_{advance[i]}wk_{m}.rds"))
-    saveRDS(liceBinary_best_results, glue("out/ensembles/liceBinary_best_results_{advance[i]}wk_{m}.rds"))
-    saveRDS(liceBinary_final_fit, glue("out/ensembles/liceBinary_best_fitted_{advance[i]}wk_{m}.rds"))
-    write_csv(liceBinary_best_preds, glue("out/ensembles/CV_ensFc-{advance[i]}_{m}.csv"))
+    for(m in c("roc_auc")) {
+      # Best fits
+      liceBinary_best_mod <- collect_metrics(liceBinary_wfs) |>
+        filter(.metric==m) |>
+        arrange(desc(mean)) |>
+        slice_max(mean, n=1, with_ties=F) |>
+        select(.metric, mean, model, wflow_id, .config)
+      liceBinary_best_wf <- liceBinary_wfs |>
+        extract_workflow(liceBinary_best_mod$wflow_id[1])
+      liceBinary_best_results <- liceBinary_wfs |>
+        extract_workflow_set_result(id=liceBinary_best_mod$wflow_id[1]) |>
+        select_best(metric=m)
+      liceBinary_final_fit <- liceBinary_best_wf |>
+        finalize_workflow(liceBinary_best_results) |>
+        fit(data=fit_df)
+      liceBinary_best_preds <- liceBinary_wfs |>
+        extract_workflow_set_result(id=liceBinary_best_mod$wflow_id[1]) |>
+        collect_predictions() |>
+        filter(.config==liceBinary_best_mod$.config[1]) |>
+        left_join(fold_rowNums)
+      
+      saveRDS(liceBinary_best_mod, glue("out/ensembles/liceBinary_ranks_{advance[i]}wk_{m}.rds"))
+      saveRDS(liceBinary_best_wf, glue("out/ensembles/liceBinary_best_wf_{advance[i]}wk_{m}.rds"))
+      saveRDS(liceBinary_best_results, glue("out/ensembles/liceBinary_best_results_{advance[i]}wk_{m}.rds"))
+      saveRDS(liceBinary_final_fit, glue("out/ensembles/liceBinary_best_fitted_{advance[i]}wk_{m}.rds"))
+      write_csv(liceBinary_best_preds, glue("out/ensembles/CV_ensFc-{advance[i]}_{m}.csv"))
+    }
+    rm(liceBinary_wfs); rm(liceBinary_best_wf); rm(liceBinary_best_results)
+    rm(liceBinary_best_mod); rm(liceBinary_final_fit); rm(liceBinary_best_preds)
+    gc()
   }
   
-  gc()
 }
 
 
