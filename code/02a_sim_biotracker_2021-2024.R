@@ -21,7 +21,7 @@ start_date <- "2021-01-01"
 end_date <- "2024-09-30"
 nDays <- length(seq(ymd(start_date), ymd(end_date), by=1))
 
-set.seed(333)
+set.seed(1001)
 
 os <- get_os()
 dirs <- switch(
@@ -30,13 +30,13 @@ dirs <- switch(
              mesh="/home/sa04ts/hydro/meshes",
              hydro="/home/sa04ts/hydro/WeStCOMS2/Archive",
              jdk="/home/sa04ts/.jdks/jdk-23.0.1/bin/java",
-             jar="/home/sa04ts/biotracker/biotracker_v1-0-1.jar",
+             jar="/home/sa04ts/biotracker/biotracker_v1-0-0.jar",
              out=glue("{getwd()}/out/sim_2021-2024")),
   windows=list(proj=getwd(),
                mesh="D:/hydro",
                hydro="D:/hydro/WeStCOMS2/Archive",
-               jdk="C:/Users/sa04ts/.jdks/openjdk-22.0.1/bin/java",
-               jar="C:/Users/sa04ts/OneDrive - SAMS/Projects/03_packages/biotracker/out/biotracker_v1-0-1.jar",
+               jdk="C:/Users/sa04ts/.jdks/openjdk-23.0.2/bin/java",
+               jar="C:/Users/sa04ts/OneDrive - SAMS/Projects/03_packages/biotracker/out/biotracker_v1-0-0.jar",
                out=glue("{getwd()}/out/sim_2021-2024"))
   )
 
@@ -50,7 +50,7 @@ sim.i <- bind_rows(
          D_h=runif(n_sim3D, 0.1*adj[1], 0.1*adj[2]),
          D_hVert=runif(n_sim3D, 0.001*adj[1], 0.001*adj[2]),
          mortSal_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
-         eggTemp_fn=sample(c("constant", "quadratic"), n_sim3D, replace=T),
+         eggTemp_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
          salinityThreshMin=runif(n_sim3D, 20, 28),
          salinityThreshMax=pmin(salinityThreshMin + runif(n_sim3D, 0.1, 6), 32),
          lightThreshCopepodid=qunif(pnorm(light_mx[,1]), (2e-6)^0.5, (2e-4)^0.5)^2,
@@ -59,7 +59,7 @@ sim.i <- bind_rows(
          swimDownSpeedMean=(qunif(pnorm(swim_mx[,2]), (1e-4)^0.5, (2e-2)^0.5))^2,
          viableDegreeDays=runif(n_sim3D, 40*adj[1], 40*adj[2])),
   expand_grid(mortSal_fn=c("constant", "logistic"),
-              eggTemp_fn=c("constant", "quadratic")) |>
+              eggTemp_fn=c("constant", "logistic")) |>
     mutate(fixDepth="true",
            D_h=runif(n_sim2D, 0.1*adj[1], 0.1*adj[2]),
            D_hVert=runif(n_sim2D, 0.001*adj[1], 0.001*adj[2]),
