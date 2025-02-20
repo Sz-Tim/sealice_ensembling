@@ -42,14 +42,15 @@ for(k in seq_along(folds)) {
     dat_rstan <- train_df |>
       select(-any_of(sim_i$sim[-i]), -any_of(paste0("c_", sim_i$sim[-i]))) |>
       make_data_rstan()
-    if(file.exists(glue("out/candidates/{sim}_CV-{folds[k]}_stanfit.rds"))) {
-      out_sim <- readRDS(glue("out/candidates/{sim}_CV-{folds[k]}_stanfit.rds"))
+    fit_ik <- glue("out/candidates/{sim}_CV-{folds[k]}_stanfit.rds")
+    if(file.exists(fit_ik)) {
+      out_sim <- readRDS(fit_ik)
     } else {
       out_sim <- stan(file="code/stan/candidate_model.stan",
                       model_name=glue("{sim}-{folds[k]}"), data=dat_rstan,
                       chains=6, cores=2,iter=3000, warmup=2500,
                       pars=c("b_b0", "b_IP", "Intercept_hu", "b_hu", "sigma"))
-      saveRDS(out_sim, glue("out/candidates/{sim}_CV-{folds[k]}_stanfit.rds"))
+      saveRDS(out_sim, fit_ik)
     }
     CV_k[[i]] <- make_predictions_candidate(out_sim, test_df, sim) |>
       colMeans() |>
@@ -84,14 +85,15 @@ for(k in seq_along(folds)) {
     dat_rstan <- train_df |>
       select(-any_of(sim_avgs[-i]), -any_of(paste0("c_", sim_avgs[-i]))) |>
       make_data_rstan()
-    if(file.exists(glue("out/ensembles/{sim}_CV-{folds[k]}_stanfit.rds"))) {
-      out_sim <- readRDS(glue("out/ensembles/{sim}_CV-{folds[k]}_stanfit.rds"))
+    fit_ik <- glue("out/ensembles/{sim}_CV-{folds[k]}_stanfit.rds")
+    if(file.exists(fit_ik)) {
+      out_sim <- readRDS(fit_ik)
     } else {
     out_sim <- stan(file="code/stan/candidate_model.stan",
                     model_name=glue("{sim}-{folds[k]}"), data=dat_rstan,
                     chains=6, cores=6,iter=3000, warmup=2500,
                     pars=c("b_b0", "b_IP", "Intercept_hu", "b_hu", "sigma"))
-    saveRDS(out_sim, glue("out/ensembles/{sim}_CV-{folds[k]}_stanfit.rds"))
+    saveRDS(out_sim, fit_ik)
     }
     CV_k[[i]] <- make_predictions_candidate(out_sim, test_df, sim) |>
       colMeans() |>
