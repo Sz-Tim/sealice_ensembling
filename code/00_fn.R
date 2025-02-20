@@ -67,6 +67,22 @@ clean_mss_lice_xlsx <- function(f_xlsx) {
 
 
 
+make_spline_recipe <- function(ens_df, bs_deg_free=4, IP_sims_incl=paste0("sim_0", 1:5)) {
+  recipe(licePerFish_rtrt ~ .,
+         data=ens_df |>
+           select(rowNum, CV_k, sepaSiteNum, date, easting, northing, licePerFish_rtrt,
+                  all_of(IP_sims_incl), all_of(paste0("c_", IP_sims_incl)))) |>
+    step_interact(~easting:northing) |>
+    step_bs(easting, northing, easting_x_northing, deg_free=bs_deg_free) |>
+    update_role(c(rowNum, CV_k, date, sepaSiteNum, starts_with("c_")), new_role="id") |>
+    update_role_requirements("id", bake=F) |>
+    prep()
+} 
+
+
+
+
+
 
 
 make_data_rstan <- function(df, R2D2_sd=FALSE) {
@@ -145,7 +161,7 @@ make_data_rstan_sLonLat <- function(df) {
 
 
 
-make_predictions_ensMix <- function(out, newdata, iter=2000, seed=NULL, mode="epred", re=TRUE, re_hu=FALSE) {
+make_predictions_ensBlend <- function(out, newdata, iter=2000, seed=NULL, mode="epred", re=TRUE, re_hu=FALSE) {
   library(tidyverse); library(rstan)
   # hurdle component is fitted with centered IP
   
@@ -196,7 +212,7 @@ make_predictions_ensMix <- function(out, newdata, iter=2000, seed=NULL, mode="ep
 
 
 
-make_predictions_ensMix_sLonLat <- function(out, newdata, iter=2000, seed=NULL, mode="point_epred") {
+make_predictions_ensBlend_sLonLat <- function(out, newdata, iter=2000, seed=NULL, mode="point_epred") {
   library(tidyverse); library(rstan)
   # hurdle component is fitted with centered IP
   
