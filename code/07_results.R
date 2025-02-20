@@ -1079,6 +1079,66 @@ ggsave("figs/talk/ens_Blend_p_map-mn_sLonLatD4.png", mean_plot, height=6.75, wid
 
 
 
+# parameterization performance --------------------------------------------
+
+sim_params <- read_csv("out/sim_2021-2024/sim_i.csv") |> 
+  select(1:13) |> 
+  mutate(across(matches("Thresh|swim"), ~if_else(!fixDepth, .x, NA)),
+         fixDepth=as.numeric(fixDepth), 
+         across(ends_with("fn"), ~as.numeric(if_else(.x=="constant", 0, 1))),
+         across(contains("swimSpeed"), ~abs(.x)) |>
+         sim=paste0("sim_", i)) |> 
+  pivot_longer(-(13:14), names_to="param_name", values_to="param_val")
+
+sim_params |> 
+  ggplot(aes(param_val, i, colour=i=="04")) + 
+  geom_point() + 
+  facet_wrap(~param_name, scales="free")
+
+param_metrics_df <- inner_join(sim_params, 
+           all_metrics_df, 
+           by=join_by(sim), relationship="many-to-many")
+
+param_metrics_df |>
+  ggplot(aes(param_val, value, colour=type)) + 
+  geom_smooth(method="loess", se=F, linewidth=0.5, linetype=3) +
+  geom_point() +
+  labs(x="Parameter value", y="Cross-validation score") +
+  facet_grid(metric~param_name, scales="free")
+
+param_metrics_df |>
+  filter(metric=="RMSE") |>
+  ggplot(aes(param_val, value, colour=type)) + 
+  geom_smooth(method="loess", se=F, linewidth=0.5, linetype=3) +
+  geom_point() +
+  facet_wrap(~param_name, scales="free_x")
+param_metrics_df |>
+  filter(metric=="'AUC'['ROC']") |>
+  ggplot(aes(param_val, value, colour=type)) + 
+  geom_smooth(method="loess", se=F, linewidth=0.5, linetype=3) +
+  geom_point() +
+  facet_wrap(~param_name, scales="free_x")
+param_metrics_df |>
+  filter(metric=="rho") |>
+  ggplot(aes(param_val, value, colour=type)) + 
+  geom_smooth(method="loess", se=F, linewidth=0.5, linetype=3) +
+  geom_point() +
+  facet_wrap(~param_name, scales="free_x")
+param_metrics_df |>
+  filter(metric=="r") |>
+  ggplot(aes(param_val, value, colour=type)) + 
+  geom_smooth(method="loess", se=F, linewidth=0.5, linetype=3) +
+  geom_point() +
+  facet_wrap(~param_name, scales="free_x")
+
+
+
+
+
+
+
+
+
 # ensFcst explainers ------------------------------------------------------
 
 library(DALEX); library(DALEXtra); library(tidymodels)
