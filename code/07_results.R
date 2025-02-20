@@ -85,7 +85,7 @@ read_csv("out/sim_2021-2024/sim_i.csv") |>
 # ensemble results --------------------------------------------------------
 
 ensCV_df <- ensFull_df |> 
-  select(rowNum, sepaSite, year, date, licePerFish_rtrt, lice_g05) |>
+  select(rowNum, sepaSite, CV_k, year, date, licePerFish_rtrt, lice_g05) |>
   left_join(read_csv("out/candidates/CV_candidate_predictions.csv")) |>
   left_join(read_csv("out/ensembles/CV_avg_predictions.csv")) |>
   left_join(read_csv("out/ensembles/CV_ensMix_predictions.csv") |>
@@ -95,28 +95,28 @@ ensCV_df <- ensFull_df |>
   left_join(read_csv("out/ensembles/CV_ensFc-1_roc_auc.csv") |>
               select(rowNum, .pred_TRUE) |> rename(pr_predF1=.pred_TRUE))
 
-years <- unique(ensFull_df$year)
-ensNull_time <- ensNull_farm <- vector("list", length(years))
-for(yr in seq_along(years)) {
-  ensNull_time[[yr]] <- ensFull_df |>
-    filter(year != years[yr]) |>
+folds <- unique(ensFull_df$CV_k)
+ensNull_time <- ensNull_farm <- vector("list", length(folds))
+for(k in seq_along(folds)) {
+  ensNull_time[[k]] <- ensFull_df |>
+    filter(CV_k != folds[k]) |>
     mutate(week=floor(week(date)/2)) |>
     group_by(week) |>
     summarise(IP_nullTime=mean(licePerFish_rtrt)) |>
     ungroup() |>
-    mutate(year=years[yr])
-  ensNull_farm[[yr]] <- ensFull_df |>
-    filter(year != years[yr]) |>
+    mutate(CV_k=folds[k])
+  ensNull_farm[[k]] <- ensFull_df |>
+    filter(CV_k != folds[k]) |>
     group_by(sepaSite) |>
     summarise(IP_nullFarm=mean(licePerFish_rtrt)) |>
     ungroup() |>
-    mutate(year=years[yr])
+    mutate(CV_k=folds[k])
 }
 ensCV_df <- ensCV_df |>
   mutate(week=floor(week(date)/2)) |>
-  left_join(reduce(ensNull_time, bind_rows)) |>
+  left_join(reduce(ensNull_time, bind_rows), by=join_by(CV_k, week)) |>
   select(-week) |>
-  left_join(reduce(ensNull_farm, bind_rows))
+  left_join(reduce(ensNull_farm, bind_rows), by=join_by(CV_k, sepaSite))
 
 
 write_csv(ensCV_df, "out/ensemble_CV.csv")
