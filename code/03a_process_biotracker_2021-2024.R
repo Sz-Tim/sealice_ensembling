@@ -93,7 +93,7 @@ for(i in seq_along(ps_ts)) {
     arrange(sim, i) |>
     pivot_wider(names_from=sim, values_from=ps_ts[i]) |>
     mutate(across(starts_with("sim"), ~replace_na(.x, 0))) |>
-    saveRDS(paste0("out/sim_2019-2023/processed/weekly/Mature_", ps_ts[i], ".rds"))
+    saveRDS(glue("{out_dir}/processed/weekly/Mature_{ps_ts[i]}.rds"))
 }
 
 

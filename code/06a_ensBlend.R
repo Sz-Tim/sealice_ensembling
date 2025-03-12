@@ -40,7 +40,8 @@ sim_i <- read_csv("out/sim_2021-2024/sim_i.csv", show_col_types=F) |>
                                    "2D", "3D", "Null"))) |>
   mutate(n5=row_number() %in% sample(1:20, 5),
          n10=row_number() %in% sample(1:20, 10),
-         n20=row_number() %in% 1:20)
+         n20=row_number() %in% 1:20,
+         best5=row_number() %in% c(4, 10, 9, 8, 20))
 
 site_i <- read_csv("data/farm_sites.csv")
 ensFull_LatLon <- read_csv("out/valid_df_2021-2024.csv") |>
@@ -56,16 +57,16 @@ ensFull_LatLon <- read_csv("out/valid_df_2021-2024.csv") |>
 # cross-validation --------------------------------------------------------
 
 mods <- expand_grid(mod=c("ranef", paste0("sLonLatD", 3:10)),
-                    nSims=paste0("n", c(5, 10, 20)))
-mods <- mods |> filter(nSims=="n5")
+                    nSims=c(paste0("n", c(5, 10, 20)), "best5"))
 
 sim_ls <- list("n5"=filter(sim_i, n5)$sim,
                "n10"=filter(sim_i, n10)$sim,
-               "n20"=filter(sim_i, n20)$sim)
+               "n20"=filter(sim_i, n20)$sim,
+               "best5"=filter(sim_i, best5)$sim)
 
 CV_ensBlend <- vector("list", length(folds))
 
-for(k in seq_along(folds)) {
+for(k in (seq_along(folds))) {
   CV_k_ls <- vector("list", nrow(mods))
   
   for(i in 1:nrow(mods)) {
@@ -115,7 +116,7 @@ for(k in seq_along(folds)) {
     
     if(grepl("sLonLat", mod)) {
       CV_k_ls[[i]] <- out_ensBlend |>
-        make_predictions_ensBlend_sLonLat(test_df, mode="epred", iter=10) |>
+        make_predictions_ensBlend_sLonLat(test_df, mode="point_epred") |>
         colMeans() |>
         as_tibble() |>
         set_names(paste0("IP_", mod, "_", nSims))
@@ -139,10 +140,14 @@ reduce(CV_ensBlend, bind_rows) |>
 # full dataset ------------------------------------------------------------
 
 mods <- expand_grid(mod=c("ranef", paste0("sLonLatD", 3:10)),
-                    nSims=c("3D", "all"))
-mods <- mods |> filter(nSims=="3D")
+                    nSims=c(paste0("n", c(5, 10, 20)), "best5"))
 
-for(i in 1:nrow(mods)) {
+sim_ls <- list("n5"=filter(sim_i, n5)$sim,
+               "n10"=filter(sim_i, n10)$sim,
+               "n20"=filter(sim_i, n20)$sim,
+               "best5"=filter(sim_i, best5)$sim)
+
+for(i in rev(1:nrow(mods))) {
   mod <- mods$mod[i]
   nSims <- mods$nSims[i]
   

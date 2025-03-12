@@ -20,8 +20,8 @@ sim_i <- read_csv("out/sim_2021-2024/sim_i.csv") |>
          lab_short=if_else(fixDepth, "2D", "3D")) |>
   group_by(lab_short) |>
   mutate(lab=paste0(lab_short, ".", row_number())) |>
-  ungroup() |>
-  slice_head(n=4)
+  ungroup() 
+sim_i <- sim_i
 
 
 # individual simulation models --------------------------------------------

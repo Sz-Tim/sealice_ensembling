@@ -311,6 +311,20 @@ make_predictions_candidate <- function(out, newdata, sim, iter=2000, seed=NULL, 
 
 
 
+join_candidates <- function(data, candidate_df, cand_id) {
+  cand_id_col <- paste0("cand", cand_id)
+  cand_pred_col <- paste0("cand_pred", cand_id)
+  data |>
+    select(all_of(c("rowNum", "ens_id", cand_id_col))) |>
+    set_names("rowNum", "ens_id", "s") |>
+    left_join(candidate_df, by=join_by(s, rowNum)) |>
+    rename_with(~paste0(cand_pred_col), all_of("cand_pred")) |>
+    select(all_of(c("rowNum", "ens_id", cand_pred_col)))
+}
+
+
+
+
 
 
 
