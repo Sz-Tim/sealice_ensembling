@@ -109,11 +109,6 @@ c_long <- future_map_dfr(dirrf(out_dir, "connectivity.*csv"),
                            mutate(sim=str_sub(str_split_fixed(.x, "sim_", 3)[,3], 1, 2)))
 plan(sequential)
 
-# # filter so that only sites with fish are included
-# active_df <- init_df |> filter(fishTonnes > 0) |> select(sepaSite, date)
-# c_long <- c_long |>
-#   inner_join(active_df, by=join_by(date, destination==sepaSite)) 
-
 site_areas <- read_csv("data/farm_sites_100m_areas.csv") |> 
   select(sepaSite, area_m2) |> 
   rename(area=area_m2)
@@ -138,8 +133,6 @@ c_daily <- list(
 ) |>
   reduce(full_join) |>
   left_join(init_df) |>
-  # mutate(fishTonnes=if_else(is.na(fishTonnes), 0, fishTonnes)) |>
-  # filter(fishTonnes > 0) |>
   complete(sepaSite, sim, date, 
            fill=list(influx=0, influx_m2=0, N_influx=0,
                      outflux=0, outflux_m2=0, N_outflux=0,
@@ -147,21 +140,3 @@ c_daily <- list(
 
 saveRDS(c_daily, glue("{out_dir}/processed/connectivity_day.rds"))
 
-
-
-
-c_daily |> 
-  ggplot(aes(date, influx_m2^0.25, colour=sim)) + 
-  geom_line(linewidth=0.2, alpha=0.25) + 
-  facet_wrap(~sepaSite) + 
-  theme_classic()
-
-c_daily |> 
-  ggplot(aes(date, outflux_m2-self_m2, colour=sim)) + 
-  geom_line() + 
-  facet_wrap(~sepaSite) + 
-  theme_classic()
-
-
-c_daily |>
-  filter(sepaSite=="CALL1")
