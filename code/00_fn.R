@@ -361,6 +361,97 @@ metric_plot_base <- function(data, theme="ms") {
     scale_shape_manual(values=c(1, 1, 5, 5, 1, 1, 3, 4)) +
     scale_size_manual(values=c(rep(2.5, 4), rep(1, 2), 1.5, 1.5)) +
     scale_alpha_manual(values=c(1, 1, 1, 1, 0.5, 0.5, 1, 1)) +
-    facet_wrap(~metric, labeller=label_parsed) +
     plot_theme
+}
+
+
+
+summarise_param_posterior <- function(post_df, sim_key, param) {
+  post_df |>
+    inner_join(sim_key |> 
+                 select(Simulation, any_of(param)) |>
+                 rename_with(~"this_param", .cols=2), 
+               by=join_by(Simulation)) |>
+    drop_na() |>
+    group_by(iter, rowNum) |>
+    mutate(p=p/sum(p)) |>
+    summarise(param_post=sum(p*this_param)) |>
+    ungroup() |>
+    set_names(c("iter", "rowNum", param))
+}
+
+
+
+
+get_param_scale <- function(param) {
+  library(scales)
+  zero_to_one_params <- c("eggTemp_fn", "mortSal_fn", "fixDepth")
+  swim_params <- c("swimUpSpeedMean", "swimDownSpeedMean")
+  salinity_params <- c("salinityThreshMin", "salinityThreshMax")
+  light_params <- c("lightThreshNauplius", "lightThreshCopepodid")
+  diffusion_params <- c("D_h", "D_hVert")
+  n_breaks <- 5
+  if(param %in% zero_to_one_params) {
+    if(grepl("fn", param)) {
+      pal <- scale_fill_viridis_c(expression('Function'), option="turbo", limits=c(0, 1),
+                                  breaks=c(0, 1), labels=c("constant", "logistic"))
+    } else {
+      pal <- scale_fill_viridis_c(expression('Dimensions'), option="turbo", limits=c(0, 1),
+                                  breaks=c(0, 1), labels=c("3D", "2D"))
+    }
+  }
+  if(param %in% swim_params) {
+    pal <- scale_fill_viridis_c(expression(m %.% s^-1), option="mako", 
+                                limits=c(0.0003, 0.01), 
+                                breaks=breaks_extended(n_breaks),
+                                labels = label_scientific(digits = 3)) 
+  }
+  if(param %in% salinity_params) {
+    pal <- scale_fill_distiller("psu", palette="Blues", 
+                                breaks=breaks_extended(n_breaks)) 
+  }
+  if(param %in% light_params) {
+    pal <- scale_fill_viridis_c(expression(mu*'mol' %.%~'m'^-2 %.% s^-1), 
+                                breaks=breaks_extended(n_breaks), 
+                                labels = label_scientific(digits = 3)) 
+  }
+  if(param %in% diffusion_params) {
+    pal <- scale_fill_viridis_c(expression(m^2 %.% s^-2), option="cividis", 
+                                breaks=breaks_extended(n_breaks-1),
+                                labels = label_scientific(digits = 3)) 
+  } 
+  if(param == "viableDegreeDays") {
+    pal <- scale_fill_viridis_c(expression(degree*C %.% days), option="rocket", 
+                                breaks=breaks_extended(n_breaks))
+  }
+  return(pal)
+}
+
+
+
+
+make_param_map_plot <- function(param_df, site_i, mesh_land) {
+  this_param <- param_df$var[1]
+  param_df |>
+    ggplot() + 
+    geom_raster(aes(easting, northing, fill=post_mn)) +
+    stat_contour(aes(easting, northing, z=post_mn), colour="white", linewidth=0.1) +
+    geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+    geom_point(data=site_i, aes(easting, northing), shape=1, colour="black", size=0.4) +
+    get_param_scale(this_param) + 
+    scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+    scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+    facet_wrap(~var_pretty, labeller=label_wrap_gen(19)) +
+    theme(axis.text=element_blank(),
+          axis.title=element_blank(),
+          axis.ticks=element_blank(),
+          legend.position="bottom",
+          legend.title.position="top",
+          legend.title=element_text(size=9, hjust=0.5),
+          legend.box.margin=margin(0,0,0,0),
+          legend.margin=margin(0,0,0,0),
+          legend.key.height=unit(0.2, "cm"),
+          legend.key.width=unit(0.8, "cm"),
+          legend.text=element_text(size=6),
+          panel.spacing=unit(0, 'cm'))
 }
