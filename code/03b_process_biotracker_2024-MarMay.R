@@ -23,7 +23,8 @@ library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
 source("code/00_fn.R")
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
 
-out_dir <- "D:/sealice_ensembling/out/sim_2023-MarMay"
+out_dir <- "out/sim_2023-MarMay"
+p_dir <- "out/ensembles/p_meshCentroids/"
 sim_i <- read_csv(glue("{out_dir}/sim_i.csv")) |>
   mutate(sim=paste0("sim_", i))
 
@@ -43,30 +44,34 @@ if(FALSE) {
 
 # ensemble weights --------------------------------------------------------
 
-# out_ensMixRE <- readRDS(glue("out/ensembles/ensMix_all_sLonLatD4_FULL_stanfit.rds"))
-dat_ensMixRE <- readRDS(glue("out/ensembles/ensMix_all_sLonLatD4_FULL_standata.rds"))
-# ensMix_rec <- readRDS("out/ensembles/recipe_sLonLatD4_all.rds")
-
-# Calculate ensemble weights at WeStCOMS2 mesh element centroids
-p_dir <- "out/ensembles/p_meshCentroids/"
-p_dir <- "D:/sealice_ensembling/out/ensembles/p_meshCentroids"
-# meshCentroid_df <- st_read("data/WeStCOMS2_mesh.gpkg") |>
-#   st_centroid() |>
-#   sevcheck::add_lonlat(drop_geom=T) |>
-#   as_tibble() |>
-#   select(i, lon, lat) |>
-#   rename(sepaSiteNum=i, easting=lon, northing=lat) |>
-#   bind_cols(map_dfc(dat_ensMixRE$sim_names, ~tibble(0) |> setNames(.x))) |>
-#   bind_cols(map_dfc(dat_ensMixRE$sim_names, ~tibble(0) |> setNames(paste0("c_", .x))))
-# 
+mod <- "n20_sLonLatD3"
+out_ensBlend <- readRDS(glue("out/ensembles/ensBlend_{mod}_FULL_stanfit.rds"))
+dat_ensBlend <- readRDS(glue("out/ensembles/ensBlend_{mod}_FULL_standata.rds"))
+meshCentroid_df <- st_read("data/WeStCOMS2_mesh.gpkg") |>
+  st_centroid() |>
+  sevcheck::add_lonlat(drop_geom=T) |>
+  as_tibble() |>
+  select(i, lon, lat) |>
+  rename(sepaSiteNum=i, easting=lon, northing=lat) |>
+  bind_cols(map_dfc(dat_ensBlend$sim_names, ~tibble(0) |> setNames(.x))) |>
+  bind_cols(map_dfc(dat_ensBlend$sim_names, ~tibble(0) |> setNames(paste0("c_", .x)))) |>
+  mutate(rowNum=1,
+         date=ymd("2023-01-01"),
+         CV_k=1,
+         licePerFish_rtrt=1)
+ensBlend_rec <- make_spline_recipe(meshCentroid_df, 3, sim_i$sim[1:20])
 # plan(multisession, workers=18)
 # foreach(i=1:nrow(meshCentroid_df),
 #         .options.future=list(globals=structure(TRUE, add="p_dir"))) %dofuture% {
-#   t(make_predictions_ensMix_sLonLat(out_ensMixRE,
-#                                   newdata=bake(ensMix_rec, meshCentroid_df[i,]),
-#                                   iter=2000, seed=1003, mode="b_p")[1,,]) |>
-#     saveRDS(glue("{p_dir}/i_{meshCentroid_df$sepaSiteNum[i]}.rds"))
-# }
+for(i in 1:nrow(meshCentroid_df)) {
+  t(make_predictions_ensBlend_sLonLat(out_ensBlend,
+                                      newdata=bake(ensBlend_rec, meshCentroid_df[i,]),
+                                      iter=2000, seed=1003, mode="b_p")[1,,]) |>
+    saveRDS(glue("{p_dir}/i_{meshCentroid_df$sepaSiteNum[i]}.rds"))
+}
+plan(sequential)
+
+
 
 
 
