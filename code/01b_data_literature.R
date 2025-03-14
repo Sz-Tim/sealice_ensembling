@@ -182,3 +182,38 @@ mort_post |>
   summarise(across(everything(), mean))
 
 
+
+
+
+
+# plot for supplement -----------------------------------------------------
+
+# plot for supplement
+fnEgg_df <- tibble(temp=seq(5, 20, by=0.1),
+                  Logistic=65.5/(1+exp(-.55*(temp-8.49)))+10.5,
+                  Constant=28.2) |>
+  pivot_longer(2:3, names_to="Function", values_to="f")
+fnMort_df <- tibble(sal=seq(5, 36, by=0.1),
+                    Logistic=0.941/(1+exp(.594*(sal_seq-13.5)))+0.0205,
+                    Constant=0.01) |>
+  pivot_longer(2:3, names_to="Function", values_to="m")
+
+p_a <- ggplot(fnEgg_df) + 
+  geom_line(aes(temp, f, linetype=Function)) +
+  geom_point(data=egg_df, aes(temperature, eggs_day_AF), shape=1) +
+  scale_linetype_manual(values=c(2,1)) +
+  ylim(0, 80) + 
+  labs(x="Temperature (C)", y="Eggs per adult female per day") +
+  theme_classic() +
+  theme(legend.position="none")
+p_b <- ggplot(fnMort_df) + 
+  geom_line(aes(sal, m, linetype=Function)) +
+  geom_point(data=sal_df, aes(salinity, mort_h), shape=1) +
+  scale_linetype_manual(values=c(2,1)) +
+  ylim(0, 1) + 
+  labs(x="Salinity (psu)", y="Hourly larval mortality rate") +
+  theme_classic() +
+  theme(legend.position="inside",
+        legend.position.inside=c(0.9, 0.9))
+cowplot::plot_grid(p_a, p_b, align="hv", axis="tblr", labels="auto", nrow=1)
+ggsave("figs/pub/fn_egg_mort.png", width=9, height=4)
