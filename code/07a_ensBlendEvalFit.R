@@ -68,12 +68,13 @@ mods <- mods |>
   full_join(mods)
 saveRDS(mods, "out/ensembles/ensBlend_EvalModSpecs.rds")
 
-CV_ensBlend <- vector("list", length(folds))
+CV_ensBlend <- CV_ensAvg <- vector("list", length(folds))
 
 for(k in (seq_along(folds))) {
-  CV_k_ls <- vector("list", nrow(mods))
+  CV_k_ls <- CV_k_ensAvg_ls <- vector("list", nrow(mods))
   
   for(i in rev(1:nrow(mods))) {
+    # EnsBlend setup
     if(grepl("sLonLat", mods$mod[i])) {
       recipe_i <- make_spline_recipe(ensFull_LatLon, 
                                      as.numeric(str_split_fixed(mods$mod[i], "D", 2)[2]), 
@@ -94,11 +95,10 @@ for(k in (seq_along(folds))) {
       pars <- c("b_p", "b_b0", "b_IP", "b_hu", "sigma", "Intercept_hu",
                 "b_p_uc", "r_grp", "sd_grp")
     }
-    
     if(grepl("pRE_huRE", mods$mod[i])) {
       pars <- c(pars, "r_grp_hu", "sd_grp_hu") 
     }
-    
+    # fit EnsBlend
     fname <- glue("out/ensembles/ensBlend_{mods$mod[i]}_{mods$nSims[i]}-{mods$sample[i]}_CV-{folds[k]}")
     if(file.exists(glue("{fname}_stanfit.rds"))) {
       cat("File exists:", fname, "\n")
@@ -107,8 +107,8 @@ for(k in (seq_along(folds))) {
       stanMod <- str_split_fixed(mods$mod[i], "D", 2)[1]
       out_ensBlend <- stan(file=glue("code/stan/ensemble_mixture_model_{stanMod}.stan"),
                            model_name=mods$mod[i], data=dat_rstan,
-                           # chains=30, cores=30, iter=2250, warmup=2000,
-                           chains=3, cores=3, iter=3000, warmup=2000,
+                           chains=30, cores=30, iter=3100, warmup=3000,
+                           # chains=3, cores=3, iter=3000, warmup=2000,
                            control=list(adapt_delta=0.95, max_treedepth=20),
                            pars=pars)
       saveRDS(out_ensBlend, glue("{fname}_stanfit.rds"))
@@ -127,12 +127,44 @@ for(k in (seq_along(folds))) {
         as_tibble() |>
         set_names(paste0("IP_", mods$mod[i], "_", mods$nSims[i], "_", mods$sample[i]))
     }
+    if(mods$mod[i]=="sLonLatD3") {
+      # fit using avg AEIP
+      dat_avg_df <- ensFull_df |>
+        select(rowNum, sepaSite, sepaSiteNum, CV_k, date, licePerFish_rtrt,
+               all_of(sim_i$sim[mods$sim[[i]]])) |>
+        rowwise() |>
+        mutate(sim_avg=mean(c_across(starts_with("sim")))) |>
+        ungroup() |>
+        mutate(c_sim_avg=c(scale(sim_avg))) |>
+        select(-matches("sim_[0-9]"))
+      train_df <- dat_avg_df |> filter(CV_k != folds[k])
+      test_df <- dat_avg_df |> filter(CV_k == folds[k])
+      fname_avg <- glue("out/ensembles/ensAvg_{mods$nSims[i]}-{mods$sample[i]}_CV-{folds[k]}")
+      if(file.exists(fname_avg)) {
+        out_sim <- readRDS(fname_avg)
+      } else {
+        dat_rstan <- train_df |> make_data_rstan()
+        out_sim <- stan(file="code/stan/candidate_model.stan",
+                        model_name=glue("avg-{folds[k]}"), data=dat_rstan,
+                        chains=6, cores=6,iter=3000, warmup=2500,
+                        pars=c("b_b0", "b_IP", "Intercept_hu", "b_hu", "sigma"))
+        saveRDS(out_sim, fname_avg)
+      }
+      CV_k_ensAvg_ls[[i]] <- make_predictions_candidate(out_sim, test_df, "avg") |>
+        colMeans() |>
+        as_tibble() |>
+        set_names(paste0("IP_avg", "_", mods$nSims[i], "_", mods$sample[i]))
+    }
   }
   CV_ensBlend[[k]] <- bind_cols(test_df |> select(rowNum),
                                 reduce(CV_k_ls, bind_cols))
+  CV_ensAvg[[k]] <- bind_cols(test_df |> select(rowNum),
+                                reduce(CV_k_ensAvg_ls, bind_cols))
 }
 reduce(CV_ensBlend, bind_rows) |>
   write_csv("out/ensembles/CV_ensBlend_EvalCV.csv")
+reduce(CV_ensAvg, bind_rows) |>
+  write_csv("out/ensembles/CV_ensAvg_EvalCV.csv")
 
 
 
@@ -140,15 +172,25 @@ reduce(CV_ensBlend, bind_rows) |>
 
 mod_ids <- readRDS("out/ensembles/ensBlend_EvalModSpecs.rds") |> 
   mutate(ens_id=paste("IP", str_sub(mod, -2, -1), nSims, sample, sep="_"),
-         nSims=factor(nSims, levels=c("n2", "n5", "n10", "n20")),
          sim_cols=map(sim, 
                       ~tibble(s=paste0("IP_sim_", str_pad(.x, 2, "left", "0"))) |>
                         mutate(cand_id=paste0("cand", row_number())) |> 
                         pivot_wider(names_from=cand_id, values_from=s))) |>
+  bind_rows(tibble(ens_id=paste0("IP_D", 3:10, "_n20_1"),
+                   mod=paste0("sLonLatD", 3:10),
+                   nSims="n20",
+                   sample=1)) |>
+  mutate(nSims=factor(nSims, levels=c("n2", "n5", "n10", "n20"))) |>
   arrange(nSims, sample, mod) |>
   mutate(ens_id_ord=factor(ens_id, levels=unique(ens_id)))
 candidate_df <- read_csv("out/candidates/CV_candidate_predictions.csv") |>
   pivot_longer(starts_with("IP_"), names_to="s", values_to="cand_pred")
+avg_df <- read_csv("out/ensembles/CV_ensAvg_EvalCV.csv") |>
+  left_join(read_csv("out/ensembles/CV_avg_predictions.csv") |>
+              select(rowNum, IP_sim_avg3D) |> rename(IP_avg_n20_1=IP_sim_avg3D)) |>
+  pivot_longer(starts_with("IP_"), names_to="avg_id", values_to="avg_pred") |>
+  separate_wider_delim(avg_id, "_", names=c("x", "avg", "nSim", "sample")) |>
+  select(-x, -avg)
 ens20_df <- read_csv("out/ensembles/CV_ensBlend_predictions.csv") |>
   select(rowNum, matches("IP_sLonLat.*n20")) |>
   inner_join(ensFull_LatLon |>
@@ -173,40 +215,41 @@ CV_df <- read_csv("out/ensembles/CV_ensBlend_EvalCV.csv") |>
 CV_df <- CV_df |>
   full_join(map(1:20, ~CV_df |> join_candidates(candidate_df, .x)) |> 
               reduce(full_join, by=join_by(rowNum, ens_id)), 
-            by=join_by(rowNum, ens_id))
+            by=join_by(rowNum, ens_id)) |>
+  separate_wider_delim(ens_id, "_", names=c("x", "D", "nSim", "sample"), cols_remove=F) |>
+  select(-x) |>
+  full_join(avg_df, by=join_by(rowNum, nSim, sample))
 
 library(yardstick)
 RMSE_site <- CV_df |>
-  group_by(sepaSiteNum, ens_id) |>
+  group_by(sepaSiteNum, ens_id, D, nSim, sample) |>
   mutate(N=n()) |>
   filter(N >= 30) |>
   summarise(across(contains("pred"), ~rmse_vec(.x, truth=licePerFish_rtrt))) |>
-  group_by(ens_id) |>
-  summarise(across(contains("pred"), mean)) |>
+  group_by(ens_id, D, nSim, sample) |>
+  summarise(across(contains("pred"), median)) |>
   pivot_longer(contains("pred")) |>
   arrange(ens_id, name) |>
   group_by(ens_id) |>
   mutate(ens_m_cand=last(value)-value,
          ens_m_cand_pct=ens_m_cand/value * 100,
          rank=min_rank(value)) |>
-  separate_wider_delim(ens_id, "_", names=c("x", "D", "nSim", "sample"), cols_remove=F) |>
-  select(-x)
+  ungroup()
 
 RMSE_date <- CV_df |>
-  group_by(date, ens_id) |>
+  group_by(date, ens_id, D, nSim, sample) |>
   mutate(N=n()) |>
   filter(N >= 30) |>
   summarise(across(contains("pred"), ~rmse_vec(.x, truth=licePerFish_rtrt))) |>
-  group_by(ens_id) |>
-  summarise(across(contains("pred"), mean)) |>
+  group_by(ens_id, D, nSim, sample) |>
+  summarise(across(contains("pred"), median)) |>
   pivot_longer(contains("pred")) |>
   arrange(ens_id, name) |>
   group_by(ens_id) |>
   mutate(ens_m_cand=last(value)-value,
          ens_m_cand_pct=ens_m_cand/value * 100,
          rank=min_rank(value)) |>
-  separate_wider_delim(ens_id, "_", names=c("x", "D", "nSim", "sample"), cols_remove=F) |>
-  select(-x)
+  ungroup()
 
 metric_df <- bind_rows(
   RMSE_site |> mutate(metric="RMSE", type="site"),
@@ -220,92 +263,74 @@ metric_df <- bind_rows(
 # summarize and visualize -------------------------------------------------
 
 metric_df |> 
+  filter(D=="D3") |>
   group_by(name) |>
   summarise(mnRank=mean(rank, na.rm=T),
             prop1=mean(rank==1, na.rm=T)) |> 
   arrange(mnRank)
 
 metric_df |> 
-  filter(nSim != "n20") |>
+  filter(D=="D3") |>
   group_by(nSim, name) |>
   summarise(mnRank=mean(rank, na.rm=T),
             prop1=mean(rank==1, na.rm=T)) |> 
+  ungroup() |>
   arrange(nSim, mnRank) |>
+  drop_na() |>
   print(n=50)
 
-metric_df |>
-  filter(nSim != "n20") |>
-  ggplot(aes(ens_m_cand, D, fill=nSim)) + 
-  geom_vline(xintercept=0) +
-  geom_boxplot() + 
-  facet_grid(type~metric, scales="free") 
-
-metric_df |>
-  ggplot(aes(ens_m_cand_pct, D, fill=nSim)) + 
-  geom_vline(xintercept=0) +
-  geom_boxplot() + 
-  facet_grid(type~metric, scales="free") 
-
-metric_df |>
-  ggplot(aes(value, ens_id, colour=name=="ens_pred")) + 
-  geom_point(shape=1) +
-  facet_grid(nSim~metric*type, scales="free")
-
-metric_df |>
-  group_by(ens_id, type, metric) |>
-  arrange(rank) |>
-  mutate(ensBest=first(name)=="ens_pred") |>
+metric_df |> 
+  filter(D=="D3") |> 
+  mutate(model_type=str_sub(name, 1, 3)) |> 
+  group_by(D, nSim, sample, metric, type, model_type) |> 
+  slice_min(rank) |> 
+  group_by(D, nSim, sample, metric, type) |> 
+  arrange(type, name) |> 
+  mutate(cand_rank=nth(rank, 2)) |> 
+  ungroup() |> 
+  filter(model_type != "can") |> 
+  group_by(D, nSim, metric, model_type) |> 
+  summarise(Pr_ens_better=mean(rank < cand_rank)) |>
   ungroup() |>
-  filter(name != "ens_pred") |>
-  ggplot(aes(ens_m_cand, ens_id, colour=ensBest)) + 
-  geom_vline(xintercept=0) +
-  geom_point(shape=1, alpha=0.75) +
-  geom_line() +
-  scale_colour_manual(values=c("grey50", "green4")) +
-  facet_grid(nSim~type, scales="free")
-
-
-metric_df |>
-  group_by(ens_id, type, metric) |>
-  arrange(rank) |>
-  mutate(ensBest=first(name)=="ens_pred") |>
-  arrange(name) |>
-  mutate(ensPct=100-last(percent_rank(rank))*100) |>
-  ungroup() |>
-  ggplot(aes(value, ens_id, colour=ensPct)) + 
-  geom_point(aes(shape=name=="ens_pred", size=name=="ens_pred"), alpha=0.75) +
-  scale_colour_distiller("Ensemble\npercentile", 
-                         limits=c(0,100), direction=1) +
-  scale_shape_manual(values=c(1, 4)) +
-  scale_size_manual(values=c(1, 2)) +
-  facet_grid(nSim~type, scales="free")
+  arrange(model_type, nSim, metric)
 
 temp_df <- metric_df |>
   filter(D=="D3") |>
   group_by(ens_id, type, metric) |>
   arrange(rank) |>
-  mutate(ensBest=if_else(first(name)=="ens_pred", "Ens['Blend']", "Candidate")) |>
+  mutate(bestMod=case_when(first(name)=="ens_pred" ~ "Ens['Blend']",
+                           first(name)=="avg_pred" ~ "Ens['Mean']",
+                           .default="Variant")) |>
   arrange(name) |>
   mutate(ensPct=100-last(percent_rank(rank))*100) |>
   ungroup() |>
-  mutate(modType=if_else(name=="ens_pred", "Ens['Blend']", "Candidate"), 
+  mutate(modType=case_when(name=="ens_pred" ~ "Ens['Blend']",
+                           name=="avg_pred" ~ "Ens['Mean']",
+                           .default="Variant"),
          sample=factor(sample, levels=10:1),
          type=factor(type, levels=c("site", "date"),
-                     labels=paste("Mean among", c("farms", "weeks"))),
+                     labels=paste("Median among", c("farms", "weeks"))),
          nSim=factor(nSim, levels=paste0("n", c(2, 5, 10, 20)),
                      labels=paste0("n: ", c(2, 5, 10, 20))))
-lab_expressions <- c(expression(Candidate),
-                     expression(Ens['Blend']))
+lab_expressions <- c(expression(Ens['Blend']),
+                     expression(Ens['Mean']),
+                     expression(Variant))
 p <- temp_df |>
-  ggplot(aes(value, sample, colour=ensBest)) + 
-  geom_point(aes(shape=modType, size=modType), alpha=0.75) +
-  geom_line(data=temp_df |> filter(name != "ens_pred")) +
-  scale_colour_manual("Best performance", values=c("#7fcdbb", "#0c2c84"),
+  ggplot(aes(value, sample)) + 
+  geom_line(data=temp_df |> filter(!grepl("ens|avg", name)) |> arrange(value),
+            aes(colour=bestMod)) +
+  scale_colour_manual("Best model", values=c("#ca0020", "#3F6B99", "#9FB6CC"),
                       labels=lab_expressions) +
-  scale_shape_manual("Model type", values=c(1, 4),
+  ggnewscale::new_scale_colour() +
+  geom_point(aes(shape=modType, size=modType, colour=modType), alpha=0.75) +
+  scale_colour_manual("Model type", values=c("#ca0020", "#3F6B99", "#3F6B99"),
+                      labels=lab_expressions) +
+  scale_shape_manual("Model type", values=c(1, 5, 1),
                      labels=lab_expressions) +
-  scale_size_manual("Model type", values=c(1, 2),
+  scale_size_manual("Model type", values=c(2.5, 2, 1),
                     labels=lab_expressions) +
   facet_grid(nSim~type, scales="free_y", space="free_y") +
-  labs(x="RMSE", y="Sample from pool of 20 candidates")
+  labs(x="RMSE", y="Sample from pool of 20 variants") +
+  theme(panel.grid.major.x=element_blank(),
+        panel.grid.minor.x=element_blank())
 ggsave("figs/pub/ensBlend_eval_RMSE.png", p, width=6, height=10.5)
