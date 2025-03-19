@@ -952,7 +952,7 @@ rm(b_p_ls); rm(out_ensBlend); gc()
 influx_df <- readRDS("out/sim_2021-2024/processed/connectivity_day.rds") |>
   select(sepaSite, sepaSite, date, sim, influx_m2) |>
   mutate(sim=paste0("sim_", sim),
-         influx_m3_4rt=(replace_na(influx_m2, 0)/2)^0.25)
+         influx_m3_4rt=(replace_na(influx_m2, 0)/20)^0.25)
 
 date_seq <- sort(unique(influx_df$date))
 ens_ls <- vector("list", length(date_seq))
@@ -1008,6 +1008,7 @@ fig_influx <- influx_ens |>
          threshold_num=as.numeric(threshold)) |>
   filter(threshold_num != 1) |>
   ggplot(aes(date, propSites, fill=threshold_num, group=threshold_num)) +
+  geom_hline(yintercept=c(0, 1), colour="grey", linewidth=0.2) +
   geom_area(colour="grey30", linewidth=0.05, outline.type="both") +
   scale_x_date(date_breaks="1 year", 
                date_labels="%Y", expand=expansion(mult=c(0.05, 0.05))) +
@@ -1024,7 +1025,7 @@ fig_influx <- influx_ens |>
         legend.key.width=unit(1.5, "cm"), 
         legend.key.height=unit(0.2, "cm"),
         strip.text=element_text(size=11))
-ggsave("figs/pub/ensBlend_influx_daily.png", fig_influx, width=7, height=4, dpi=400)
+ggsave("figs/pub/ensBlend_influx_daily_20.png", fig_influx, width=7, height=4, dpi=400)
 
 thresholds <- c(0, 1e-3, 1e-2, 1e-1, 1)
 thresh_cols <- c("white", viridis::turbo(length(thresholds)+1))
@@ -1171,9 +1172,9 @@ ps_lims <- tibble(ens_mn=c(0,0),
 p_dir <- "out/ensembles/p_meshCentroids/"
 
 library(doFuture)
-plan(multisession, workers=70)
+plan(multicore, workers=20)
 for(i in 1:length(f)) {
-  timestep <- ymd("2019-04-01") + dhours(as.numeric(str_sub(str_split_fixed(f[i], "_t_", 2)[,2], 1, -5)))
+  timestep <- ymd("2021-01-01") + dhours(as.numeric(str_sub(str_split_fixed(f[i], "_t_", 2)[,2], 1, -5)))
   ps_i <- readRDS(f[i]) |>
     select(i, all_of(dat_ensBlend$sim_names))
   ps_mx <- as.matrix(ps_i |> select(-i))
@@ -1220,18 +1221,18 @@ for(i in 1:length(f)) {
   cat("Finished", as.character(timestep), "\n")
   gc()
 }
-saveRDS(ps_lims, "out/sim_2019-2023/processed/ps_lims.rds")
+saveRDS(ps_lims, "out/sim_2021-2024/processed/ps_lims.rds")
 
 timesteps <- ymd("2019-04-01") + dhours(as.numeric(str_sub(str_split_fixed(f, "_t_", 2)[,2], 1, -5)))
 ens_df <- map2_dfr(ens_ls, timesteps, ~.x |> mutate(date=.y))
-saveRDS(ens_df, "out/sim_2019-2023/processed/ens_weekly.rds")
+saveRDS(ens_df, "out/sim_2021-2024/processed/ens_weekly.rds")
 
 ens_avg <- ens_df |>
   filter(date >= "2021-05-01") |>
   group_by(i) |>
   summarise(across(where(is.numeric), .fn=list(mn=mean, md=median))) |>
   ungroup()
-saveRDS(ens_avg, "out/sim_2019-2023/processed/ens_avg_sLonLatD4_all.rds")
+saveRDS(ens_avg, "out/sim_2021-2024/processed/ens_avg_sLonLatD3_n20.rds")
 
 
 
@@ -1240,14 +1241,15 @@ saveRDS(ens_avg, "out/sim_2019-2023/processed/ens_avg_sLonLatD4_all.rds")
 
 # Left side: Ensemble mean(copepodid density)
 # Right side: Ensemble mean(weekly CI width)
-ens_df <- readRDS("out/sim_2019-2023/processed/ens_weekly.rds")
-ens_avg <- readRDS("out/sim_2019-2023/processed/ens_avg_sLonLatD4_all.rds")
+# ens_df <- readRDS("out/sim_2021-2024/processed/ens_weekly.rds")
+ens_avg <- readRDS("out/sim_2021-2024/processed/ens_avg_sLonLatD3_n20.rds")
 
 # WeStCOMS mesh
 mesh_fp <- st_read("data/WeStCOMS2_meshFootprint.gpkg")
 mesh_sf <- st_read("data/WeStCOMS2_mesh.gpkg") |> select(i, geom)
 linnhe_mesh <- mesh_sf |> 
-  st_crop(c(xmin=150000, xmax=220000, ymin=710000, ymax=785000))
+  # st_crop(c(xmin=150000, xmax=220000, ymin=710000, ymax=785000))
+  st_crop(c(xmin=130000, xmax=220000, ymin=710000, ymax=785000))
 skye_mesh <- mesh_sf |> 
   st_crop(c(xmin=100000, xmax=198000, ymin=780000, ymax=920000))
 
@@ -1259,14 +1261,14 @@ westcoms_panel <- ggplot() +
   theme(legend.position=c(0.285, 0.1),
         legend.background=element_blank(),
         legend.key.height=unit(0.1, "cm"),
-        legend.key.width=unit(0.4, "cm"),
+        legend.key.width=unit(0.43, "cm"),
         legend.title=element_blank(),
         legend.text=element_text(size=7),
         axis.title=element_blank())
 linnhe_panel <- ggplot() +
   geom_sf(data=mesh_fp, fill="grey", colour="grey30", linewidth=0.2) +
   guides(fill=guide_colourbar(title.position="top", direction="horizontal")) +
-  scale_x_continuous(limits=c(160000, 216000), breaks=c(-5.8, -5.4, -5)) +
+  scale_x_continuous(limits=c(143000, 216000), breaks=c(-5.8, -5.4, -5)) +
   scale_y_continuous(limits=c(720000, 778000), breaks=c(56.4, 56.7)) +
   theme(legend.position="none",
         axis.title=element_blank())
@@ -1278,8 +1280,9 @@ skye_panel <- ggplot() +
   theme(legend.position="none",
         axis.title=element_blank())
 
-mn_lims <- c(0, 0.75)
-mn_breaks <- c(0, 0.01, 0.1, 0.3)
+mn_lims <- c(0, 0.002^0.25)
+mn_breaks <- c(0, 0.0001, 0.001)
+mn_labs <- c("0", "1e-4", "1e-3")
 
 ci_lims <- c(0, 0.15)
 ci_breaks <- c(0, 1e-6, 1e-4)
@@ -1290,7 +1293,7 @@ ci_labs <- c("0", "1e-6", "1e-4")
 # mn_breaks <- c(0, 0.01, 0.05, 0.1)
 
 ens_avg <- ens_avg |>
-  mutate(ens_mn_mn=pmin(ens_mn_mn/2, mn_lims[2]),
+  mutate(ens_mn_mn=pmin(ens_mn_mn/5, mn_lims[2]),
          ens_CI95width_mn=pmin(ens_CI95width_mn, ci_lims[2]))
 
 ens_map <- vector("list", 6)
@@ -1300,7 +1303,7 @@ ens_map[[1]] <- westcoms_panel +
           aes(fill=ens_mn_mn), colour=NA) + 
   scale_fill_viridis_c("",
                        option="turbo", limits=mn_lims,
-                       breaks=mn_breaks^0.25, labels=mn_breaks) +
+                       breaks=mn_breaks^0.25, labels=mn_labs) +
   annotate("text", x=79000, y=547000, label="Ensemble mean", size=3) +
   annotate("text", x=79000, y=525000, 
            label=expression("cop." %.% "m"^"-3" %.% "h"^"-1"), parse=T, size=3)
@@ -1308,12 +1311,12 @@ ens_map[[2]] <- linnhe_panel +
   geom_sf(data=ens_avg |> right_join(linnhe_mesh, y=_),
           aes(fill=ens_mn_mn), colour=NA) + 
   scale_fill_viridis_c(option="turbo", limits=mn_lims,
-                       breaks=mn_breaks^0.25, labels=mn_breaks) 
+                       breaks=mn_breaks^0.25, labels=mn_labs) 
 ens_map[[3]] <- skye_panel + 
   geom_sf(data=ens_avg |> right_join(skye_mesh, y=_),
           aes(fill=ens_mn_mn), colour=NA) + 
   scale_fill_viridis_c(option="turbo", limits=mn_lims,
-                       breaks=mn_breaks^0.25, labels=mn_breaks) 
+                       breaks=mn_breaks^0.25, labels=mn_labs) 
 ens_map[[4]] <- westcoms_panel + 
   geom_sf(data=ens_avg |> right_join(mesh_sf, y=_),
           aes(fill=ens_CI95width_mn), colour=NA) + 
@@ -1334,8 +1337,8 @@ ens_map[[6]] <- skye_panel +
                    breaks=ci_breaks^0.25, labels=ci_labs)
 
 plot_grid(plotlist=ens_map, ncol=2, nrow=3, labels="auto", byrow=FALSE,
-          rel_heights=c(2.1, 0.98, 1.23), rel_widths=c(1, 1)) |>
-  ggsave("figs/pub/ens_map_sLonLatD4_all.png", plot=_, width=4.75, height=9.55, dpi=300)
+          rel_heights=c(2.1, 0.8, 1.23), rel_widths=c(1, 1)) |>
+  ggsave("figs/pub/ens_map_sLonLatD3_n20.png", plot=_, width=4.75, height=9.1, dpi=600)
 
 ggsave("figs/talk/ens_map_WeStCOMS.png", ens_map[[1]], width=3.25, height=7, dpi=300)
 
