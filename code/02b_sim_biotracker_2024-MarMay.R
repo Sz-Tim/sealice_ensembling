@@ -10,12 +10,13 @@ library(sevcheck) # devtools::install_github("Sz-Tim/sevcheck")
 library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
 library(doFuture)
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
+source("code/00_fn.R")
 
 
 
 # define parameters -------------------------------------------------------
 
-cores_per_sim <- 10
+cores_per_sim <- 25
 parallel_sims <- 1
 start_date <- "2024-03-17"
 end_date <- "2024-05-31"
@@ -33,23 +34,20 @@ dirs <- switch(
              jar="/home/sa04ts/biotracker/biotracker_v1-0-1.jar",
              out=glue("{getwd()}/out/sim_2024-MarMay")),
   windows=list(proj=getwd(),
-               mesh="D:/hydro",
-               hydro="D:/hydro/WeStCOMS2/Archive",
-               # jdk="C:/Users/sa04ts/.jdks/openjdk-22.0.1/bin/java",
+               mesh="E:/hydro",
+               hydro="E:/hydro/WeStCOMS2/Archive",
                jdk="C:/Users/sa04ts/.jdks/openjdk-23.0.2/bin/java",
-               jar="C:/Users/sa04ts/OneDrive - SAMS/Projects/03_packages/biotracker/out/biotracker_v1-0-1.jar",
+               jar="C:/Users/sa04ts/OneDrive - SAMS/Projects/03_packages/biotracker/out/biotracker_v1-0-0.jar",
                out=glue("D:/sealice_ensembling/out/sim_2024-MarMay"))
 )
 
 n_sim3D <- 16
 n_sim2D <- 4
-adj <- 1 + c(-1, 1)*0.25
-swim_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
 light_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
+swim_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
 sim.i <- bind_rows(
   tibble(fixDepth="false",
-         D_h=runif(n_sim3D, 0.1*adj[1], 0.1*adj[2]),
-         D_hVert=runif(n_sim3D, 0.001*adj[1], 0.001*adj[2]),
+         D_hVert=exp(runif(n_sim3D, log(1e-5), log(1e-1))),
          mortSal_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
          eggTemp_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
          salinityThreshMin=runif(n_sim3D, 20, 28),
@@ -57,21 +55,15 @@ sim.i <- bind_rows(
          lightThreshCopepodid=qunif(pnorm(light_mx[,1]), (2e-6)^0.5, (2e-4)^0.5)^2,
          lightThreshNauplius=qunif(pnorm(light_mx[,2]), (0.05)^0.5, (0.5)^0.5)^2,
          swimUpSpeedMean=-(qunif(pnorm(swim_mx[,1]), (1e-4)^0.5, (2e-2)^0.5))^2,
-         swimDownSpeedMean=(qunif(pnorm(swim_mx[,2]), (1e-4)^0.5, (2e-2)^0.5))^2,
-         viableDegreeDays=runif(n_sim3D, 40*adj[1], 40*adj[2])),
+         swimDownSpeedMean=(qunif(pnorm(swim_mx[,2]), (1e-4)^0.5, (2e-2)^0.5))^2),
   expand_grid(mortSal_fn=c("constant", "logistic"),
               eggTemp_fn=c("constant", "logistic")) |>
     mutate(fixDepth="true",
-           D_h=runif(n_sim2D, 0.1*adj[1], 0.1*adj[2]),
-           D_hVert=runif(n_sim2D, 0.001*adj[1], 0.001*adj[2]),
-           salinityThreshMin=0,
-           salinityThreshMax=0,
-           lightThreshCopepodid=0,
-           lightThreshNauplius=0,
-           swimUpSpeedMean=0,
-           swimDownSpeedMean=0,
-           viableDegreeDays=runif(n_sim2D, 40*adj[1], 40*adj[2]))
+           D_h=exp(runif(n_sim2D, log(1e-3), log(1e1))))
 ) |>
+  mutate(across(where(is.numeric), ~if_else(is.na(.x), 0, .x))) |>
+  mutate(D_h=exp(runif(n_sim2D+n_sim3D, log(1e-3), log(1e1))),
+         viableDegreeDays=runif(n_sim2D+n_sim3D, 30, 50)) |>
   mutate(across(where(is.numeric), ~signif(.x, 5))) |>
   mutate(i=str_pad(row_number(), 2, "left", "0"),
          outDir=glue("{dirs$out}/sim_{i}/"))
@@ -84,14 +76,14 @@ sim_seq <- 1:nrow(sim.i)
 walk(sim_seq, ~dir.create(sim.i$outDir[.x], showWarnings=F))
 
 walk(sim_seq,
-     ~set_biotracker_properties(
+     ~set_biotracker_properties2(
        # run settings
        properties_file_path=glue("{dirs$out}/sim_{sim.i$i[.x]}.properties"),
        parallelThreads=cores_per_sim,
        parallelThreadsHD=6,
        start_ymd=as.numeric(str_remove_all(start_date, "-")),
        numberOfDays=nDays,
-       nparts=20,
+       nparts=50,
        checkOpenBoundaries="true",
        # meshes and environment
        mesh1=glue("{dirs$mesh}/WeStCOMS2_mesh.nc"),
@@ -107,7 +99,7 @@ walk(sim_seq,
        stepsPerStep=30,
        # biology
        fixDepth=sim.i$fixDepth[.x],
-       startDepth=10,
+       startDepth=1,
        eggTemp_fn=sim.i$eggTemp_fn[.x],
        mortSal_fn=sim.i$mortSal_fn[.x],
        salinityThreshMin=sim.i$salinityThreshMin[.x],
@@ -129,12 +121,12 @@ walk(sim_seq,
        # recording
        verboseSetUp="true",
        recordConnectivity="false",
-       recordPsteps= "true",
+       recordPsteps="true",
        splitPsteps="false",
        pstepsInterval=1,
        pstepsMaxDepth=5,
        recordVertDistr="true",
-       vertDistrInterval=6,
+       vertDistrInterval=1,
        vertDistrMax=30,
        recordElemActivity="false"))
 
@@ -146,7 +138,7 @@ if(os=="windows") {
 } else {
   plan(multicore, workers=parallel_sims)
 }
-# sim_seq <- sim_seq[-(1:16)]
+sim_seq <- sim_seq[-(1:19)]
 sim_sets <- split(sim_seq, rep(1:parallel_sims, length(sim_seq)/parallel_sims))
 foreach(j=1:parallel_sims, .options.future=list(globals=structure(TRUE, add="sim.i"))) %dofuture% {
   for(i in sim_sets[[j]]) {

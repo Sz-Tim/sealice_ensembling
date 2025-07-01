@@ -46,13 +46,17 @@ sepa.locs <- read_csv("data/aquaculture_scot/se_licence_conditions.csv") |>
   rename(sepaSite=sepaSiteId) |>
   mutate(operator=if_else(operator=="Wester Ross Salmon Ltd", "Wester Ross Fisheries Ltd", operator)) |>
   st_drop_geometry() |>
-  # relocate sites that are outside WeStCOMS2 mesh due to coastal simplification
-  mutate(easting=if_else(sepaSite=="RONAR1", 161050, easting),
-         northing=if_else(sepaSite=="RONAR1", 855080, northing)) |>
-  mutate(easting=if_else(sepaSite=="PLOI1", 206760, easting),
-         northing=if_else(sepaSite=="PLOI1", 916230, northing)) |>
+  # relocate sites that are outside WeStCOMS2 mesh due to coastal simplification; SHUI1 is wrong based on satellite imagery
+  mutate(easting=case_when(sepaSite=="RONAR1" ~ 161050,
+                           sepaSite=="PLOI1" ~ 206760,
+                           sepaSite=="SHUI1" ~ 192535,
+                           .default=easting),
+         northing=case_when(sepaSite=="RONAR1" ~ 855080,
+                            sepaSite=="PLOI1" ~ 916230,
+                            sepaSite=="SHUI1" ~ 749665,
+                            .default=northing)) |>
   st_as_sf(coords=c("easting", "northing"), crs=27700, remove=F) |>
-  select(sepaSite, operator, easting, northing, geometry)
+  select(sepaSite, operator, easting, northing, maximumBiomassAllowedTonnes, geometry)
 mss.locs <- read_csv("data/aquaculture_scot/ms_site_details.csv") |>
   filter(aquacultureType=="Fish" & waterType=="Seawater") |>
   st_as_sf(coords=c("easting", "northing"), crs=27700, remove=F) %>%
@@ -78,7 +82,7 @@ biomass_df <- read_csv("data/aquaculture_scot/biomass_monthly_reports.csv") |>
   mutate(year=year(date)) |>
   filter(waterType=="Seawater",
          between(date, ymd("2017-01-01"), ymd("2024-12-31"))) |>
-  select(-siteName, -easting, -northing) |>
+  select(-siteName, -easting, -northing, -maximumBiomassAllowedTonnes) |>
   inner_join(sites.i |> st_drop_geometry(), by="sepaSite") |>
   arrange(sepaSite, date)
 
@@ -156,7 +160,7 @@ default_df <- bind_cols(
     select(default_all)
 )
 default_df <- bind_rows(
-  default_df,
+  default_df[1:52,],
   default_df |> filter(week %in% c(1, 52)) |>
     summarise(week=53,
               across(starts_with("default"), mean))
@@ -187,7 +191,8 @@ biomass_interp <- left_join(
   mutate(actualBiomassOnSiteTonnes=as.numeric(na.fill(zoo(actualBiomassOnSiteTonnes), 
                                                       c(0, "extend", "extend")))) |>
   filter(any(actualBiomassOnSiteTonnes > 0)) |>
-  ungroup()
+  ungroup() |>
+  left_join(sepa.locs |> st_drop_geometry() |> select(sepaSite, maximumBiomassAllowedTonnes))
 
 lice_interp <- lice_df |>
   mutate(week=week(weekBeginning),
@@ -236,7 +241,7 @@ out.df <- combo.df |>
 # save output -------------------------------------------------------------
 
 out.df |>
-  select(sepaSite, date, weeklyAverageAf, actualBiomassOnSiteTonnes, total_AF) |>
+  select(sepaSite, date, weeklyAverageAf, actualBiomassOnSiteTonnes, maximumBiomassAllowedTonnes, total_AF) |>
   write_csv(glue("data/lice_biomass_{min(out.df$date)}_{max(out.df$date)}.csv"))
 out.df |>
   filter(date >= "2021-01-01") |>
@@ -247,7 +252,7 @@ out.df |>
 out.df |>
   filter(date >= "2021-01-01") |>
   mutate(date.c=str_remove_all(date, "-")) |>
-  select(sepaSite, date.c, total_AF) |>
+  select(sepaSite, date.c, total_AF)  |>
   pivot_wider(names_from=date.c, values_from=total_AF) |>
   filter(sepaSite %in% read_csv("data/farm_sites.csv")$sepaSite) |>
   mutate(across(where(is.numeric), ~replace_na(.x, 0))) |>
@@ -313,7 +318,7 @@ out.df |>
 mesh_sf <- st_read("data/WeStCOMS2_mesh.gpkg")
 connect_dist <- c(100, 250, 500) # radius in m
 for(i in connect_dist) {
-  mesh_sf |>
+  i_df <- mesh_sf |>
     st_intersection(read_csv("data/farm_sites.csv") |>
                       st_as_sf(coords=c("easting", "northing"), crs=27700) |>
                       st_buffer(dist=i)) %>%
@@ -322,10 +327,17 @@ for(i in connect_dist) {
     mutate(vol=area*depth,
            vol_30m=area*pmin(depth, 30)) |>
     group_by(sepaSite) |>
-    summarise(area_m2=as.numeric(sum(area)),
+    summarise(i=list(i),
+              area_m2=as.numeric(sum(area)),
               vol_m3=as.numeric(sum(vol)),
               vol30m_m3=as.numeric(sum(vol_30m))) |>
-    left_join(read_csv("data/farm_sites.csv")) |>
+    left_join(read_csv("data/farm_sites.csv")) 
+  i_df |>
+    select(-i) |>
     write_csv(glue("data/farm_sites_{i}m_areas.csv"))
+  i_df |>
+    select(sepaSite, i) |>
+    unnest(i) |>
+    write_csv(glue("data/farm_sites_{i}m_meshElems.csv"))
 }
 

@@ -20,6 +20,8 @@ library(sevcheck) # devtools::install_github("Sz-Tim/sevcheck")
 library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
 library(progressr)
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
+handlers(global = TRUE)
+options(future.globals.maxSize=5e9)
 
 mesh_i <- st_read("data/WeStCOMS2_mesh.gpkg") |>
   mutate(vol_top50m=area*pmin(depth, 50)) |> 
@@ -37,20 +39,6 @@ ncores <- 20
 
 
 # calculate ensemble distributions ----------------------------------------
-
-handlers(global = TRUE)
-options(future.globals.maxSize=5e9)
-ens_parallel <- function(z_df_i, z_mx, p_dir) {
-  prog <- progressor(along=1:max(z_df_i$ii))
-  foreach(k=1:max(z_df_i$ii), .combine=rbind, .inorder=TRUE, 
-          .options.future=list(globals=structure(TRUE, add=c("z_mx", "p_dir", "z_df_i")))) %dofuture% {
-            prog()
-            rows <- which(z_df_i$ii==k)
-            p <- readRDS(glue("{p_dir}i_{as.integer(z_df_i$i[rows[1]])}.rds"))
-            ens_k <- z_mx[rows,,drop=F] %*% p
-            t(apply(ens_k, 1, function(x) c(mean(x), sd(x))))
-          }
-}
 
 dates <- seq(ymd("2023-01-01"), ymd("2023-12-31"), by=1)
 for(i in seq_along(dates)) {

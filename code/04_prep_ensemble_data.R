@@ -22,12 +22,12 @@ site_i <- read_csv("data/farm_sites.csv") |>
   left_join(read_csv("data/farm_sites_100m_areas.csv") |> select(sepaSite, area_m2) |> rename(area=area_m2))
 init_df <- full_join(
   site_i,
-  read_csv("data/lice_daily_2021-01-01_2024-09-30.csv", skip=1,
+  read_csv("data/lice_daily_2021-01-01_2024-12-31.csv", skip=1,
            col_names=c("sepaSite", paste0("d_", 0:1736)))
 ) |>
   pivot_longer(starts_with("d_"), names_to="date", values_to="density") |>
   mutate(date=ymd("2021-01-01") + as.numeric(str_sub(date, 3, -1))) |>
-  left_join(read_csv("data/lice_biomass_2017-01-01_2024-09-30.csv") |>
+  left_join(read_csv("data/lice_biomass_2017-01-01_2024-12-31.csv") |>
               rename(fishTonnes=actualBiomassOnSiteTonnes))
 out_dir <- "out/sim_2021-2024"
 sim_i <- read_csv(glue("{out_dir}/sim_i.csv")) |>
@@ -83,8 +83,7 @@ newFarms_df <- init_df |>
   group_by(sepaSite) |>
   fill(productionCycleNumber) |>
   filter(!is.na(productionCycleNumber)) |>
-  group_by(sepaSite, productionCycleNumber) |>
-  ungroup() |>
+  filter(fishTonnes > 0) |>
   select(sepaSite, date, productionCycleNumber, fishTonnes) |>
   # join with non-interpolated lice data
   inner_join(read_csv("data/lice_data_nonInterpolated.csv") |>
@@ -110,7 +109,7 @@ surv_ls <- map(1:length(surv), ~prod(surv[1:.x])) |>
 valid_df <- c_daily |>
   select(sim, sepaSite, date, influx_m2) |>
   # fill in all dates for all sites (c_daily is sparse with 0's omitted)
-  full_join(expand_grid(date=seq(ymd("2019-04-01"), ymd("2023-12-31"), by=1), 
+  full_join(expand_grid(date=seq(ymd("2019-04-01"), ymd("2024-12-31"), by=1), 
                         sepaSite=unique(newFarms_df$sepaSite),
                         sim=unique(c_daily$sim))) |>
   mutate(influx_m2=replace_na(influx_m2, 0)) |>
@@ -163,4 +162,4 @@ valid_df <- valid_df |>
   ungroup()
 
 
-write_csv(valid_df, "out/valid_df_2021-2024.csv")
+write_csv(valid_df, "out/valid_df_2021-2024_FULL.csv")

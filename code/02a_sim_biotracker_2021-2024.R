@@ -15,10 +15,10 @@ theme_set(theme_bw() + theme(panel.grid=element_blank()))
 
 # define parameters -------------------------------------------------------
 
-cores_per_sim <- 31
-parallel_sims <- 4
+cores_per_sim <- 21 # 31
+parallel_sims <- 3 # 4
 start_date <- "2021-01-01"
-end_date <- "2024-09-30"
+end_date <- "2024-12-31"
 nDays <- length(seq(ymd(start_date), ymd(end_date), by=1))
 
 set.seed(1001)
@@ -42,13 +42,11 @@ dirs <- switch(
 
 n_sim3D <- 16
 n_sim2D <- 4
-adj <- 1 + c(-1, 1)*0.25
-swim_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
 light_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
+swim_mx <- MASS::mvrnorm(n_sim3D, c(0,0), matrix(c(1, 0.8, 0.8, 1), nrow=2))
 sim.i <- bind_rows(
   tibble(fixDepth="false",
-         D_h=runif(n_sim3D, 0.1*adj[1], 0.1*adj[2]),
-         D_hVert=runif(n_sim3D, 0.001*adj[1], 0.001*adj[2]),
+         D_hVert=exp(runif(n_sim3D, log(1e-5), log(1e-1))),
          mortSal_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
          eggTemp_fn=sample(c("constant", "logistic"), n_sim3D, replace=T),
          salinityThreshMin=runif(n_sim3D, 20, 28),
@@ -56,26 +54,21 @@ sim.i <- bind_rows(
          lightThreshCopepodid=qunif(pnorm(light_mx[,1]), (2e-6)^0.5, (2e-4)^0.5)^2,
          lightThreshNauplius=qunif(pnorm(light_mx[,2]), (0.05)^0.5, (0.5)^0.5)^2,
          swimUpSpeedMean=-(qunif(pnorm(swim_mx[,1]), (1e-4)^0.5, (2e-2)^0.5))^2,
-         swimDownSpeedMean=(qunif(pnorm(swim_mx[,2]), (1e-4)^0.5, (2e-2)^0.5))^2,
-         viableDegreeDays=runif(n_sim3D, 40*adj[1], 40*adj[2])),
+         swimDownSpeedMean=(qunif(pnorm(swim_mx[,2]), (1e-4)^0.5, (2e-2)^0.5))^2),
   expand_grid(mortSal_fn=c("constant", "logistic"),
               eggTemp_fn=c("constant", "logistic")) |>
     mutate(fixDepth="true",
-           D_h=runif(n_sim2D, 0.1*adj[1], 0.1*adj[2]),
-           D_hVert=runif(n_sim2D, 0.001*adj[1], 0.001*adj[2]),
-           salinityThreshMin=0,
-           salinityThreshMax=0,
-           lightThreshCopepodid=0,
-           lightThreshNauplius=0,
-           swimUpSpeedMean=0,
-           swimDownSpeedMean=0,
-           viableDegreeDays=runif(n_sim2D, 40*adj[1], 40*adj[2]))
+           D_h=exp(runif(n_sim2D, log(1e-3), log(1e1))))
 ) |>
+  mutate(across(where(is.numeric), ~if_else(is.na(.x), 0, .x))) |>
+  mutate(D_h=exp(runif(n_sim2D+n_sim3D, log(1e-3), log(1e1))),
+         viableDegreeDays=runif(n_sim2D+n_sim3D, 30, 50)) |>
   mutate(across(where(is.numeric), ~signif(.x, 5))) |>
   mutate(i=str_pad(row_number(), 2, "left", "0"),
          outDir=glue("{dirs$out}/sim_{i}/"))
 write_csv(sim.i, glue("{dirs$out}/sim_i.csv")) 
 sim_seq <- 1:nrow(sim.i)
+sim_seq <- 2:4
 
 
 # set properties ----------------------------------------------------------
@@ -99,14 +92,14 @@ walk(sim_seq,
        # sites
        sitefile=glue("{dirs$proj}/data/farm_sites.csv"),
        sitefileEnd=glue("{dirs$proj}/data/farm_sites.csv"),
-       siteDensityPath=glue("{dirs$proj}/data/lice_daily_2021-01-01_2024-09-30.csv"),
+       siteDensityPath=glue("{dirs$proj}/data/lice_daily_2021-01-01_2024-12-31.csv"),
        # dynamics
        D_h=sim.i$D_h[.x],
        D_hVert=sim.i$D_hVert[.x],
        stepsPerStep=30,
        # biology
        fixDepth=sim.i$fixDepth[.x],
-       startDepth=10,
+       startDepth=1,
        eggTemp_fn=sim.i$eggTemp_fn[.x],
        mortSal_fn=sim.i$mortSal_fn[.x],
        salinityThreshMin=sim.i$salinityThreshMin[.x],
@@ -146,7 +139,6 @@ if(os=="windows") {
 } else {
   plan(multicore, workers=parallel_sims)
 }
-# sim_seq <- sim_seq[-(1:4)]
 sim_sets <- split(sim_seq, rep(1:parallel_sims, length(sim_seq)/parallel_sims))
 foreach(j=1:parallel_sims, .options.future=list(globals=structure(TRUE, add="sim.i"))) %dofuture% {
   for(i in sim_sets[[j]]) {

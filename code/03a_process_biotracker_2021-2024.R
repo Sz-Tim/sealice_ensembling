@@ -25,26 +25,13 @@ sim_i <- read_csv(glue("{out_dir}/sim_i.csv")) |>
 site_i <- read_csv("data/farm_sites.csv")
 init_df <- full_join(
   site_i,
-  read_csv("data/lice_daily_2021-01-01_2024-09-30.csv", skip=1,
+  read_csv("data/lice_daily_2021-01-01_2024-12-31.csv", skip=1,
              col_names=c("sepaSite", paste0("d_", 0:1736)))
 ) |>
   pivot_longer(starts_with("d_"), names_to="date", values_to="density") |>
   mutate(date=ymd("2021-01-01") + as.numeric(str_sub(date, 3, -1))) |>
-  left_join(read_csv("data/lice_biomass_2017-01-01_2024-09-30.csv") |>
+  left_join(read_csv("data/lice_biomass_2017-01-01_2024-12-31.csv") |>
               rename(fishTonnes=actualBiomassOnSiteTonnes))
-
-
-
-
-# extract output ----------------------------------------------------------
-
-# extract biotracker output: sim_[0-9][0-9].tar.gz
-if(FALSE) {
-  f_tgz <- dirf(out_dir, "tar.gz")
-  walk(f_tgz, ~untar(.x, exdir=str_remove(.x, ".tar.gz")))
-}
-
-
 
 
 
@@ -56,11 +43,32 @@ env_df <- dirf(glue("{out_dir}/sim_01/"), "siteConditions") |>
             mutate(date=ymd(str_split_fixed(basename(.x), "_", 3)[,2])))
 saveRDS(env_df, glue("{out_dir}/processed/env_df.rds"))
 
+env_df <- readRDS(glue("{out_dir}/processed/env_df.rds"))
+p <- env_df |> 
+  select(-depth) |> 
+  pivot_longer(2:7) |> 
+  mutate(name=case_when(name=="salinity" ~ "Salinity (psu)",
+                        name=="temperature" ~ "Temperature (C)",
+                        name=="u" ~ "Eastward water velocity (m/s)",
+                        name=="v" ~ "Northward water velocity (m/s)",
+                        name=="w" ~ "Upward water velocity (m/s)",
+                        name=="uv" ~ "Current magnitude (m/s)")) |>
+  mutate(name=factor(name)) |>
+  mutate(name=lvls_reorder(name, c(5, 4, 2, 3, 6, 1))) |>
+  ggplot(aes(date, value, group=site)) + 
+  geom_line(alpha=0.05, colour="#084594") + 
+  facet_wrap(~name, scales="free_y", ncol=2) +
+  theme(axis.title=element_blank(),
+        panel.grid.major.x=element_line(linewidth=0.2, colour="grey90"),
+        panel.grid.major.y=element_line(linewidth=0.2, colour="grey90"))
+ggsave("figs/pub_new/env_vars.png", p, width=9, height=10)
+
+
 
 
 # particle densities ------------------------------------------------------
 
-ps_wide_rtrt <- load_psteps_simSets(out_dir, mesh_i, sim_i, ncores=30, 
+ps_wide_rtrt <- load_psteps_simSets(out_dir, mesh_i, sim_i, ncores=5, 
                                     liceScale=1/168, trans="4th_rt")
 saveRDS(ps_wide_rtrt, glue("{out_dir}/processed/psteps_wide_rtrt.rds"))
 
@@ -74,7 +82,7 @@ ps_long_rtrt <- ps_wide_rtrt |>
 
 tictoc::tic()
 ps_avg_rtrt <- ps_long_rtrt |>
-  calc_psteps_avg("rtrt_N_m2", ncores=30, mesh_sf=mesh_sf)
+  calc_psteps_avg("rtrt_N_m2", ncores=5, mesh_sf=mesh_sf)
 tictoc::toc()
 saveRDS(ps_avg_rtrt, glue("{out_dir}/processed/psteps_avg_rtrt.rds"))
 
@@ -103,7 +111,7 @@ for(i in seq_along(ps_ts)) {
 # connectivity ------------------------------------------------------------
 
 # Mean hourly connectivity (day total / 24)
-plan(multisession, workers=40)
+plan(multisession, workers=20)
 c_long <- future_map_dfr(dirrf(out_dir, "connectivity.*csv"),
                          ~load_connectivity(.x, site_i$sepaSite, liceScale=1/24) |>
                            mutate(sim=str_sub(str_split_fixed(.x, "sim_", 3)[,3], 1, 2)))
@@ -132,7 +140,8 @@ c_daily <- list(
     select(-area)
 ) |>
   reduce(full_join) |>
-  left_join(init_df) |>
+  left_join(init_df |> select(sepaSite, date, weeklyAverageAf, fishTonnes), 
+            by=join_by(sepaSite, date)) |>
   complete(sepaSite, sim, date, 
            fill=list(influx=0, influx_m2=0, N_influx=0,
                      outflux=0, outflux_m2=0, N_outflux=0,
