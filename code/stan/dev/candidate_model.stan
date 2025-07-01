@@ -78,7 +78,8 @@ transformed parameters {
   real lprior = 0;  // prior contributions to the log posterior
   // priors
   lprior += normal_lpdf(b_b0 | 0, 1);
-  lprior += normal_lpdf(b_IP | 0, 1);
+  lprior += normal_lpdf(b_IP | 0.25, 1)
+    - 1 * log_diff_exp(normal_lcdf(1 | 0.25, 1), normal_lcdf(0 | 0.25, 1));
   lprior += logistic_lpdf(Intercept_hu | 0, 1);
   lprior += normal_lpdf(b_hu | 0, 1);
   lprior += student_t_lpdf(sigma | 3, 0, 2.5)

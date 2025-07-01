@@ -23,7 +23,7 @@ theme_set(theme_bw() + theme(panel.grid=element_blank()))
 options(tidymodels.dark = TRUE)
 
 gridSize <- 100
-cores <- 20
+cores <- 50
 
 
 
@@ -33,7 +33,7 @@ cores <- 20
 
 # compile dataset ---------------------------------------------------------
 
-ensFull_df <- read_csv("out/valid_df_2021-2024.csv") |>
+ensFull_df <- read_csv("out/valid_df_2021-2024_FULL.csv") |>
   mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5)) |>
   left_join(read_csv("data/farm_sites.csv"))
 
@@ -56,9 +56,7 @@ sim_i <- read_csv("out/sim_2021-2024/sim_i.csv", show_col_types=F) |>
          lab_short=factor(lab_short, 
                           levels=c("Ens['Fcst']", "Ens['Blend']", "Mean2D", "Mean3D", 
                                    "2D", "3D", "Null"))) |>
-  mutate(n5=row_number() %in% sample(1:20, 5),
-         n10=row_number() %in% sample(1:20, 10),
-         n20=row_number() %in% 1:20)
+  mutate(n20=row_number() %in% 1:20)
 
 fit_df <- ensFull_df |>
   select(rowNum, sepaSite, sepaSiteNum, productionCycleNumber, CV_k, date,
@@ -85,16 +83,6 @@ base_recipe <- recipe(licePerFish_rtrt ~ ., data=fit_df) |>
   update_role_requirements("not used", bake=F)
 
 recipes <- list(
-  n5=base_recipe |>
-    update_role(any_of(sim_i$sim[!sim_i$n5]), new_role="not used"),
-  PCA_n5=base_recipe |>
-    update_role(any_of(sim_i$sim[!sim_i$n5]), new_role="not used") |>
-    step_pca(starts_with("sim") & has_role("predictor"), num_comp=tune()),
-  n10=base_recipe |>
-    update_role(any_of(sim_i$sim[!sim_i$n10]), new_role="not used"),
-  PCA_n10=base_recipe |>
-    update_role(any_of(sim_i$sim[!sim_i$n10]), new_role="not used") |>
-    step_pca(starts_with("sim") & has_role("predictor"), num_comp=tune()),
   n20=base_recipe,
   PCA_n20=base_recipe |>
     step_pca(starts_with("sim") & has_role("predictor"), num_comp=tune())
@@ -187,7 +175,7 @@ for(i in seq_along(advance)) {
     autoplot(licePerFish_wfs) + scale_colour_brewer(type="qual", palette="Paired")
     ggsave(glue("figs/licePerFish_ranks_{advance[i]}wk.png"), width=15, height=5)
     
-    for(m in c("rmse")) {
+    for(m in c("rmse", "rsq")) {
       map(m, 
           ~rank_results(licePerFish_wfs, rank_metric=.x, select_best=TRUE) |>
             filter(.metric==.x) |>
@@ -227,7 +215,7 @@ for(i in seq_along(advance)) {
   
   
   
-  j <- 2
+  j <- 1
   if(j==2) {
     # liceBinary
     if(get_os()=="windows") {
