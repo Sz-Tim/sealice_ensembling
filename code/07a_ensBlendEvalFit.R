@@ -19,7 +19,7 @@ theme_set(theme_bw())
 # load datasets -----------------------------------------------------------
 
 # Full dataset
-ensFull_df <- read_csv("out/valid_df_2021-2024_FULL.csv") |>
+ensFull_df <- read_csv("out/valid_df_2021-2024.csv") |>
   mutate(across(starts_with("sim_"), ~.x - mean(.x), .names="c_{.col}")) 
 folds <- unique(ensFull_df$CV_k)
 
@@ -43,7 +43,7 @@ sim_i <- read_csv("out/sim_2021-2024/sim_i.csv", show_col_types=F) |>
                                    "2D", "3D", "Null")))
 
 site_i <- read_csv("data/farm_sites.csv")
-ensFull_LatLon <- read_csv("out/valid_df_2021-2024_FULL.csv") |>
+ensFull_LatLon <- ensFull_df |>
   select(rowNum, date, CV_k, sepaSite, sepaSiteNum, licePerFish_rtrt, starts_with("sim")) |>
   select(-contains("avg")) |>
   mutate(across(starts_with("sim_"), ~.x - mean(.x), .names="c_{.col}")) |>
@@ -57,18 +57,12 @@ ensFull_LatLon <- read_csv("out/valid_df_2021-2024_FULL.csv") |>
 
 set.seed(1001)
 mods <- expand_grid(nSims=c(paste0("n", c(3, 5, 10, 15))),
-            sample=1:100) |>
+                    sample=1:100) |>
   rowwise() |>
   mutate(sim=list(sample(1:20, as.numeric(str_sub(nSims, 2, -1))))) |>
   ungroup() |>
-  mutate(mod=list(paste0("sLonLat_", c("", "RE_"), "GQ_D3"))) |>
-  unnest(mod) |>
-  filter(mod=="sLonLat_RE_GQ_D3")
-# saveRDS(mods, "out/ensembles/ensEval/ensBlend_EvalModSpecs.rds")
-
-# mods <- mods |>
-#   filter(nSims=="n3") |>
-#   arrange(desc(mod), (sample))
+  mutate(mod="ensBlend_D3")
+saveRDS(mods, "out/ensembles/ensEval/ensBlend_EvalModSpecs.rds")
 
 CV_ensBlend <- CV_ensAvg <- vector("list", nrow(mods))
 
@@ -84,29 +78,22 @@ for(i in rev(1:nrow(mods))) {
     full_df <- bake(recipe_i, ensFull_LatLon)
     test_rows <- which(ensFull_LatLon$CV_k == folds[k])
     dat_rstan <- make_data_rstan_sLonLat_GQ(full_df, test_rows)
-    pars <- c(#"b_b0", "b_IP", "b_hu", "sigma", "Intercept_hu", #"b_p",
-              "GQ_Ypred"#, "GQ_mu", "GQ_hu", "GQ_IP_ens",
-              # paste0("b_s_", c("easting", "northing", "easting_x_northing"))
-              )
     
     # fit EnsBlend
-    fname <- glue("out/ensembles/ensEval/ensBlend_{mods$mod[i]}_{mods$nSims[i]}-{mods$sample[i]}_CV-{folds[k]}")
-    if(file.exists(glue("{fname}_stanfit.rds"))) {
+    fname <- glue("out/ensembles/ensEval/{mods$mod[i]}_{mods$nSims[i]}-{mods$sample[i]}_CV-{folds[k]}")
+    if(file.exists(glue("{fname}_Ypred.rds"))) {
       cat("File exists:", fname, "\n")
-      out_ensBlend <- readRDS(glue("{fname}_stanfit.rds"))
     } else {
-      stanMod <- str_sub(str_split_fixed(mods$mod[i], "D", 2)[1], 1, -2)
-      out_ensBlend <- stan(file=glue("code/stan/ensemble_mixture_model_{stanMod}.stan"),
+      out_ensBlend <- stan(file="code/stan/ensBlend_model_GQ.stan",
                            model_name=mods$mod[i], data=dat_rstan,
                            chains=3, cores=3, iter=3000, warmup=2000,
                            control=list(adapt_delta=0.95, max_treedepth=20),
-                           pars=pars)
-      colMeans(rstan::extract(out_ensBlend, pars="GQ_Ypred")[[1]]) |>
+                           pars="GQ_Ypred")
+      Ypred <- colMeans(rstan::extract(out_ensBlend, pars="GQ_Ypred")[[1]]) |>
         as_tibble() |>
         set_names(paste0("IP_", mods$mod[i], "_", mods$nSims[i], "_", mods$sample[i])) |>
-        mutate(rowNum=test_rows) |>
-        saveRDS(glue("{fname}_Ypred.rds"))
-      # saveRDS(out_ensBlend, glue("{fname}_stanfit.rds"))
+        mutate(rowNum=test_rows)
+      saveRDS(Ypred, glue("{fname}_Ypred.rds"))
       saveRDS(dat_rstan, glue("{fname}_standata.rds")) 
     }
    
@@ -121,25 +108,25 @@ for(i in rev(1:nrow(mods))) {
       select(-matches("sim_[0-9]"))
     test_rows <- which(dat_avg_df$CV_k == folds[k])
     fname_avg <- glue("out/ensembles/ensEval/ensAvg_{mods$nSims[i]}-{mods$sample[i]}_CV-{folds[k]}")
-    if(file.exists(glue("{fname_avg}_stanfit.rds"))) {
+    if(file.exists(glue("{fname_avg}_Ypred.rds"))) {
       cat("File exists:", fname_avg, "\n")
-      out_sim <- readRDS(glue("{fname_avg}_stanfit.rds"))
     } else {
       dat_rstan <- dat_avg_df |> make_data_rstan_GQ(test_rows)
       out_sim <- stan(file="code/stan/candidate_model_GQ.stan",
                       model_name=glue("avg-{folds[k]}"), data=dat_rstan,
                       chains=3, cores=3, iter=3000, warmup=2000,
-                      pars=c("GQ_Ypred"))
-      colMeans(rstan::extract(out_sim, pars="GQ_Ypred")[[1]]) |>
+                      pars="GQ_Ypred")
+      Ypred <- colMeans(rstan::extract(out_sim, pars="GQ_Ypred")[[1]]) |>
         as_tibble() |>
         set_names(paste0("IP_avg", "_", mods$nSims[i], "_", mods$sample[i])) |>
-        mutate(rowNum=test_rows) |>
-        saveRDS(glue("{fname_avg}_Ypred.rds"))
-      # saveRDS(out_sim, glue("{fname_avg}_stanfit.rds"))
+        mutate(rowNum=test_rows)
+      saveRDS(Ypred, glue("{fname_avg}_Ypred.rds"))
       saveRDS(dat_rstan, glue("{fname_avg}_standata.rds"))
     }
   }
 }
+
+
 
 # load predictions
 pred_f <- tibble(pred_f=dir("out/ensembles/ensEval", "Ypred"),
@@ -152,7 +139,7 @@ pred_f <- tibble(pred_f=dir("out/ensembles/ensEval", "Ypred"),
                  fold=str_split_fixed(str_split_fixed(pred_f, "CV-", 2)[,2],
                                       "_", 2)[,1]) |>
   group_by(mod, nSims, sample) |>
-  mutate(finished=any(grepl(10, fold))) |>
+  mutate(finished=n()==10) |>
   ungroup() |>
   filter(finished)
 
@@ -167,7 +154,7 @@ predBlend_df <- pred_f |>
   ungroup() 
 ensBlend_preds <- reduce(predBlend_df$df, full_join, by=join_by(rowNum))
 ensBlend_preds |>
-  write_csv("out/ensembles/CV_ensBlend_EvalCV_NEW_TEMP.csv")
+  write_csv("out/ensembles/CV_ensBlend_EvalCV.csv")
 
 predAvg_df <- pred_f |>
   filter(mod=="ensAvg") |>
@@ -180,7 +167,7 @@ predAvg_df <- pred_f |>
   ungroup() 
 ensAvg_preds <- reduce(predAvg_df$df, full_join, by=join_by(rowNum))
 ensAvg_preds |>
-  write_csv("out/ensembles/CV_ensAvg_EvalCV_NEW_TEMP.csv")
+  write_csv("out/ensembles/CV_ensAvg_EvalCV.csv")
 
 
 
@@ -218,26 +205,26 @@ candidate_df <- read_csv("out/candidates/CV_candidate_predictions.csv") |>
   inner_join(ensFull_LatLon |>
                select(rowNum, licePerFish_rtrt, date, sepaSiteNum)) |>
   mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5))
-avg_df <- read_csv("out/ensembles/CV_ensAvg_EvalCV_NEW_TEMP.csv") |>
+avg_df <- read_csv("out/ensembles/CV_ensAvg_EvalCV.csv") |>
   left_join(read_csv("out/ensembles/CV_avg_predictions.csv") |>
               select(rowNum, IP_sim_avg3D) |> rename(IP_avg_n20_1=IP_sim_avg3D)) |>
   pivot_longer(starts_with("IP_"), names_to="avg_id", values_to="avg_pred") |>
   separate_wider_delim(avg_id, "_", names=c("x", "avg", "nSim", "sample")) |>
   select(-x, -avg)
 ens20_df <- read_csv("out/ensembles/CV_ensBlend_predictions.csv") |>
-  select(rowNum, matches("IP_sLonLat.*n20")) |>
+  select(rowNum, IP_D4_n20) |>
   inner_join(ensFull_LatLon |>
                select(rowNum, licePerFish_rtrt, date, sepaSiteNum)) |>
   mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5)) |>
   pivot_longer(starts_with("IP_"), names_to="ens_id", values_to="ens_pred") |>
-  mutate(ens_id=paste0(str_remove(ens_id, "sLonLat"), "_1")) 
-CV_df <- read_csv("out/ensembles/CV_ensBlend_EvalCV_NEW_TEMP.csv") |>
-  rename_with(~str_remove(.x, "sLonLat_RE_GQ_")) |>
+  mutate(ens_id=paste0(str_remove(ens_id, "sLonLat"), "_1"))
+CV_df <- read_csv("out/ensembles/CV_ensBlend_EvalCV.csv") |>
+  rename_with(~str_remove(.x, "ensBlend_")) |>
   inner_join(ensFull_LatLon |>
                select(rowNum, licePerFish_rtrt, date, sepaSiteNum)) |>
   mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5)) |>
   pivot_longer(starts_with("IP_"), names_to="ens_id", values_to="ens_pred") |>
-  # bind_rows(ens20_df) |>
+  bind_rows(ens20_df) |>
   separate_wider_delim(ens_id, "_", names=c("x", "D", "nSim", "sample"), cols_remove=F) |>
   select(-x) |>
   full_join(avg_df, by=join_by(rowNum, nSim, sample))
@@ -499,12 +486,12 @@ resampleEval_df <- bind_rows(
   mutate(modType=str_split_fixed(name, "_", 2)[,1]) |>
   mutate(name=if_else(grepl("cand", name), simID, name))
 
-write_csv(resampleEval_df, "out/ensBlend_resample_performance_NEW_TEMP.csv")
+write_csv(resampleEval_df, "out/ensBlend_resample_performance.csv")
 
 
 # summarize and visualize -------------------------------------------------
 
-resampleEval_df <- read_csv("out/ensBlend_resample_performance_NEW_TEMP.csv")
+resampleEval_df <- read_csv("out/ensBlend_resample_performance.csv")
 resampleEval_df |>
   group_by(modType, name, metric) |>
   summarise(mnRank=mean(rank, na.rm=T),
@@ -513,15 +500,6 @@ resampleEval_df |>
   group_by(metric, modType) |>
   slice_head(n=1) |>
   print(n=50)
-
-resampleEval_df |>
-  group_by(type, nSim, D, modType, name, metric) |>
-  summarise(mnRank=mean(rank, na.rm=T),
-            prop1=mean(rank==1, na.rm=T)) |>
-  mutate(mnTile=mnRank/(as.numeric(str_sub(nSim, 2, -1))+1)) |>
-  ggplot(aes(mnTile, name, colour=type)) + 
-  geom_point() + 
-  facet_grid(metric~D*nSim)
 
 p1 <- resampleEval_df |>
   filter(nSim != "n20") |>
@@ -539,9 +517,9 @@ p1 <- resampleEval_df |>
   geom_bar(position="fill", colour="grey30") +
   scale_fill_gradient2("Ensemble percentile    \nvs. constituents", 
                        midpoint=0.5, limits=c(0, 1), labels=scales::label_percent(suffix="")) +
-  scale_y_continuous("Percentage of resamples", 
+  scale_y_continuous("Number of resamples", 
                      breaks=c(0, 0.5, 1),
-                     labels=scales::label_percent()) +
+                     labels=scales::label_percent(suffix="")) +
   xlab("Number of constituents per resample") +
   facet_grid(type~metric, labeller=labeller(metric=label_parsed)) +
   # facet_grid(.~metric, labeller=labeller(metric=label_parsed)) +
@@ -565,9 +543,9 @@ p2 <- resampleEval_df |>
   geom_bar(position="fill", colour="grey30") +
   scale_fill_gradient2("Ensemble percentile    \nvs. constituents", 
                        midpoint=0.5, limits=c(0, 1), labels=scales::label_percent(suffix="")) +
-  scale_y_continuous("Percentage of resamples", 
+  scale_y_continuous("Number of resamples", 
                      breaks=c(0, 0.5, 1),
-                     labels=scales::label_percent()) +
+                     labels=scales::label_percent(suffix="")) +
   xlab("Number of constituents per resample") +
   facet_grid(type~metric, labeller=labeller(metric=label_parsed)) +
   # facet_grid(.~metric, labeller=labeller(metric=label_parsed)) +
@@ -853,10 +831,6 @@ prop_bar_df |>
 lab_expressions <- c(expression(Ens['Blend']),
                      expression(Ens['Avg']),
                      expression(Constituent))
-lab_expressions_07 <- c(expression(Ens['Blend']),
-                        expression(Ens['Avg']),
-                        expression('3D.7'),
-                        expression(Constituent))
 point_df <- resampleEval_df |> 
   filter(nSim != "n20") |>
   # mean rank among weeks or farms
@@ -878,13 +852,14 @@ point_df <- resampleEval_df |>
   mutate(bestMod=last(name),
          bestMod=case_when(bestMod=="ens_pred" ~ "Ens['Blend']",
                            bestMod=="avg_pred" ~ "Ens['Avg']",
-                           bestMod=="sim_07" ~ "3D.7",
-                           .default="Other"),
-         bestMod=factor(bestMod, levels=c("Ens['Blend']", "Ens['Avg']", "3D.7", "Other"))) |>
+                           .default="Constituent"),
+         bestMod=factor(bestMod, levels=c("Ens['Blend']", "Ens['Avg']", "Constituent"))) |>
   ungroup()
  
 
-
+modType_cols <- c("Ens['Blend']"="#ca0020", 
+                  "Ens['Avg']"="#3F6B99", 
+                  "Constituent"="#9FB6CC")
 p <- point_df |> 
   filter(metric=="RMSE") |>
   ggplot(aes(value, sample)) +
@@ -894,15 +869,15 @@ p <- point_df |>
               group_by(metric, type, nSim, sample) |> 
               slice_max(skill, n=2) |> ungroup(),
             aes(colour=bestMod)) +
-  scale_colour_manual("Best model", values=c("#ca0020", "#3F6B99", "#9FB6CC"),
-                      labels=lab_expressions_07) +
+  scale_colour_manual("Best model", values=modType_cols,
+                      labels=lab_expressions) +
   ggnewscale::new_scale_colour() +
   geom_point(aes(colour=modType, shape=modType), size=2, alpha=0.75) +
   geom_point(data=point_df |> filter(metric=="RMSE") |> 
                group_by(metric, type, nSim, sample) |>
                slice_max(skill) |> ungroup(),
              aes(colour=modType, shape=modType), size=3) +
-  scale_colour_manual("Model type", values=c("#ca0020", "#ca0020", "#9FB6CC"),
+  scale_colour_manual("Model type", values=modType_cols,
                       labels=lab_expressions) +
   scale_shape_manual("Model type", values=c("|", "X", "o"),
                      labels=lab_expressions) +
@@ -923,15 +898,15 @@ p <- point_df |>
               group_by(metric, type, nSim, sample, modType) |>
               slice_max(value) |> ungroup(),
             aes(colour=bestMod)) +
-  scale_colour_manual("Best model", values=c("#ca0020", "#ca0020", "#3F6B99", "#9FB6CC"),
-                      labels=lab_expressions_07) +
+  scale_colour_manual("Best model", values=modType_cols,
+                      labels=lab_expressions) +
   ggnewscale::new_scale_colour() +
   geom_point(aes(colour=modType, shape=modType), size=2, alpha=0.75) +
   geom_point(data=point_df |> filter(metric=="r") |> 
                group_by(metric, type, nSim, sample) |>
                slice_max(value) |> ungroup(),
              aes(colour=modType, shape=modType), size=3) +
-  scale_colour_manual("Model type", values=c("#ca0020", "#ca0020", "#9FB6CC"),
+  scale_colour_manual("Model type", values=modType_cols,
                       labels=lab_expressions) +
   scale_shape_manual("Model type", values=c("|", "X", "o"),
                      labels=lab_expressions) +
@@ -954,15 +929,15 @@ p <- point_df |>
               group_by(metric, type, nSim, sample) |> 
               slice_max(value, n=2),
             aes(colour=bestMod)) +
-  scale_colour_manual("Best model", values=c("#ca0020", "#ca0020", "#3F6B99", "#9FB6CC"),
-                      labels=lab_expressions_07) +
+  scale_colour_manual("Best model", values=modType_cols,
+                      labels=lab_expressions) +
   ggnewscale::new_scale_colour() +
   geom_point(aes(colour=modType, shape=modType), size=2, alpha=0.75) +
   geom_point(data=point_df |> filter(metric=="ROC_AUC") |> 
                group_by(metric, type, nSim, sample) |>
                slice_max(value) |> ungroup(),
              aes(colour=modType, shape=modType), size=3) +
-  scale_colour_manual("Model type", values=c("#ca0020", "#ca0020", "#9FB6CC"),
+  scale_colour_manual("Model type", values=modType_cols,
                       labels=lab_expressions) +
   scale_shape_manual("Model type", values=c("|", "X", "o"),
                      labels=lab_expressions) +

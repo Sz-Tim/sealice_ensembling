@@ -10,13 +10,14 @@ library(sevcheck) # devtools::install_github("Sz-Tim/sevcheck")
 library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
 library(doFuture)
 theme_set(theme_bw() + theme(panel.grid=element_blank()))
+source("code/00_fn.R")
 
 
 
 # define parameters -------------------------------------------------------
 
-cores_per_sim <- 21 # 31
-parallel_sims <- 3 # 4
+cores_per_sim <- 21
+parallel_sims <- 3
 start_date <- "2021-01-01"
 end_date <- "2024-12-31"
 nDays <- length(seq(ymd(start_date), ymd(end_date), by=1))
@@ -68,7 +69,6 @@ sim.i <- bind_rows(
          outDir=glue("{dirs$out}/sim_{i}/"))
 write_csv(sim.i, glue("{dirs$out}/sim_i.csv")) 
 sim_seq <- 1:nrow(sim.i)
-sim_seq <- 2:4
 
 
 # set properties ----------------------------------------------------------

@@ -107,13 +107,13 @@ surv <- c(1, rep(c(0.970, 0.998, 0.997, 0.942), times=c(15, 20, 20, maxLag-15-20
 surv_ls <- map(1:length(surv), ~prod(surv[1:.x])) |>
   setNames(paste0("IP", 0:(length(surv)-1)))
 valid_df <- c_daily |>
-  select(sim, sepaSite, date, influx_m2) |>
+  select(sim, sepaSite, date, influx_m3) |>
   # fill in all dates for all sites (c_daily is sparse with 0's omitted)
   full_join(expand_grid(date=seq(ymd("2019-04-01"), ymd("2024-12-31"), by=1), 
                         sepaSite=unique(newFarms_df$sepaSite),
                         sim=unique(c_daily$sim))) |>
-  mutate(influx_m2=replace_na(influx_m2, 0)) |>
-  rename(IP=influx_m2) |>
+  mutate(influx_m3=replace_na(influx_m3, 0)) |>
+  rename(IP=influx_m3) |>
   arrange(sim, sepaSite, date) |>
   # for each date, get lagged influx for up to 150 days 
   group_by(sim, sepaSite) |>
@@ -156,10 +156,11 @@ valid_df <- valid_df |>
   mutate(rowNum=row_number(),
          sepaSiteNum=as.numeric(factor(sepaSite))) |>
   rowwise() |>
-  mutate(sim_avg3D=mean(c_across(any_of(filter(sim_i, lab_short=="3D")$sim))),
+  mutate(sim_avgAll=mean(c_across(any_of(filter(sim_i, lab_short %in% c("2D", "3D"))$sim))),
+         sim_avg3D=mean(c_across(any_of(filter(sim_i, lab_short=="3D")$sim))),
          sim_avg2D=mean(c_across(any_of(filter(sim_i, lab_short=="2D")$sim)))) |>
   mutate(CV_k=sum(date>CV_dateSplits)) |>
   ungroup()
 
 
-write_csv(valid_df, "out/valid_df_2021-2024_FULL.csv")
+write_csv(valid_df, "out/valid_df_2021-2024.csv")

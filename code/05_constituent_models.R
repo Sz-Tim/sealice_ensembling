@@ -11,7 +11,7 @@ rstan_options(auto_write=T)
 source("code/00_fn.R")
 
 # Full dataset
-ensFull_df <- read_csv("out/valid_df_2021-2024_FULL.csv") |>
+ensFull_df <- read_csv("out/valid_df_2021-2024.csv") |>
   mutate(across(starts_with("sim_"), ~.x - mean(.x), .names="c_{.col}"))
 folds <- unique(ensFull_df$CV_k)
 
@@ -56,13 +56,13 @@ for(k in seq_along(folds)) {
                              by=join_by(rowNum))
 }
 reduce(CV_sims, bind_rows) |>
-  write_csv("out/candidates_endSep/CV_candidate_predictions.csv")
+  write_csv("out/candidates/CV_candidate_predictions.csv")
 
 
 
 # unweighted mean models --------------------------------------------------
 
-sim_avgs <- c("sim_avg3D", "sim_avg2D")
+sim_avgs <- c("sim_avgAll", "sim_avg3D", "sim_avg2D")
 CV_avgs <- vector("list", length(folds))
 for(k in seq_along(folds)) {
   test_rows <- which(ensFull_df$CV_k == folds[k])

@@ -118,8 +118,8 @@ c_long <- future_map_dfr(dirrf(out_dir, "connectivity.*csv"),
 plan(sequential)
 
 site_areas <- read_csv("data/farm_sites_100m_areas.csv") |> 
-  select(sepaSite, area_m2) |> 
-  rename(area=area_m2)
+  select(sepaSite, area_m2, vol20m_m3) |> 
+  rename(area=area_m2, vol=vol20m_m3)
 
 # mean hourly IP for each day
 c_daily <- list(
@@ -127,25 +127,30 @@ c_daily <- list(
     calc_influx(destination, value, sim, date) |> 
     rename(sepaSite=destination) |>
     left_join(site_areas) |>
-    mutate(influx_m2=influx/area) |> 
-    select(-area),
+    mutate(influx_m2=influx/area,
+           influx_m3=influx/vol) |> 
+    select(-area, -vol),
   c_long |> 
     calc_outflux(source, value, sim, date, 
-                 dest_areas=site_areas |> rename(destination=sepaSite)) |> 
-    rename(sepaSite=source),
+                 dest_areas=site_areas |> rename(destination=sepaSite)) |>
+    rename(sepaSite=source) |> 
+    left_join(site_areas) |>
+    mutate(outflux_m3=outflux/vol) |>
+    select(-area, -vol),
   c_long |> 
     calc_self_infection(source, destination, value, sim, date) |> rename(sepaSite=source) |>
     left_join(site_areas) |>
-    mutate(self_m2=self/area) |> 
-    select(-area)
+    mutate(self_m2=self/area,
+           self_m3=self/vol) |> 
+    select(-area, -vol)
 ) |>
   reduce(full_join) |>
   left_join(init_df |> select(sepaSite, date, weeklyAverageAf, fishTonnes), 
             by=join_by(sepaSite, date)) |>
   complete(sepaSite, sim, date, 
-           fill=list(influx=0, influx_m2=0, N_influx=0,
-                     outflux=0, outflux_m2=0, N_outflux=0,
-                     self=0, self_m2=0))
+           fill=list(influx=0, influx_m2=0, influx_m3=0, N_influx=0,
+                     outflux=0, outflux_m2=0, outflux_m3=0, N_outflux=0,
+                     self=0, self_m2=0, self_m3=0))
 
 saveRDS(c_daily, glue("{out_dir}/processed/connectivity_day.rds"))
 

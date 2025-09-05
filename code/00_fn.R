@@ -557,7 +557,7 @@ join_candidates_date <- function(data, candidate_df, cand_id) {
 
 
 
-metric_plot_base <- function(data, theme="ms") {
+metric_plot_base <- function(data, theme="ms", colours) {
   
   if(theme=="ms") {
     plot_theme <- theme(panel.grid.major.y=element_line(colour="grey85", linewidth=0.4),
@@ -580,18 +580,14 @@ metric_plot_base <- function(data, theme="ms") {
   }
   
   ggplot(data=data) + 
-    geom_point(aes(type, value, colour=lab_short, shape=lab_short, size=lab_short, alpha=lab_short)) +
-    geom_text(data=data |> filter(sim=="sim_04"), 
+    geom_point(aes(type, value, colour=lab_short, shape=lab_short, size=lab_short, alpha=lab_short), stroke=0.7) +
+    geom_text(data=data |> filter(sim=="sim_07"), 
               aes(type, value, colour=lab_short, label=paste0(lab, "%->% ''")), parse=T,
-              hjust=1, size=2, nudge_x=-0.02) +
-    scale_x_discrete(labels=label_wrap_gen(width=10)) +
-    scale_colour_manual(values=c("black", "red",
-                                 scico(2, begin=0.2, end=0.7, palette="broc", direction=1),
-                                 scico(2, begin=0.2, end=0.7, palette="broc", direction=1),
-                                 "grey50", "grey50")) +
-    scale_shape_manual(values=c(1, 1, 5, 5, 1, 1, 3, 4)) +
-    scale_size_manual(values=c(rep(2.5, 4), rep(1, 2), 1.5, 1.5)) +
-    scale_alpha_manual(values=c(1, 1, 1, 1, 0.5, 0.5, 1, 1)) +
+              hjust=1, size=1.5, nudge_x=-0.1) +
+    scale_colour_manual(values=colours) +
+    scale_shape_manual(values=c(1, 1, 1, 4, 3)) +
+    scale_size_manual(values=c(rep(2.5, 3), rep(1, 2))) +
+    scale_alpha_manual(values=c(1, 1, 1, 1, 1)) +
     plot_theme
 }
 
@@ -614,7 +610,7 @@ summarise_param_posterior <- function(post_df, sim_key, param) {
 
 
 
-get_param_scale <- function(param, sim_key) {
+get_param_scale2 <- function(param, sim_key, type="c") {
   library(scales)
   zero_to_one_params <- c("eggTemp_fn", "mortSal_fn", "fixDepth")
   swim_params <- c("swimUpSpeedMean", "swimDownSpeedMean")
@@ -626,17 +622,17 @@ get_param_scale <- function(param, sim_key) {
   if(param %in% zero_to_one_params) {
     if(grepl("fn", param)) {
       pal <- scale_fill_viridis_c(expression('Function'), option="turbo", limits=c(0, 1),
-                                  breaks=c(0, 1), labels=c("constant", "logistic"))
+                                  breaks=seq(0, 1, by=0.1), labels=c("constant", rep("", 9), "logistic"))
     } else {
       pal <- scale_fill_viridis_c(expression('Dimensions'), option="turbo", limits=c(0, 1),
-                                  breaks=c(0, 1), labels=c("3D", "2D"))
+                                  breaks=seq(0, 1, by=0.1), labels=c("3D", rep("", 9), "2D"))
     }
   }
   if(param %in% swim_params) {
-    pal <- scale_fill_viridis_c(expression(m %.% s^-1), option="mako", 
+    pal <- scale_fill_viridis_c(expression(cm %.% s^-1), option="mako", 
                                 limits=lims,
-                                breaks=breaks_extended(n_breaks),
-                                labels = label_scientific(digits = 3)) 
+                                breaks=breaks_extended(n_breaks))#,
+                                # labels = label_scientific(digits = 3)) 
   }
   if(param %in% salinity_params) {
     pal <- scale_fill_distiller("psu", palette="Blues", 
@@ -671,13 +667,14 @@ make_param_map_plot <- function(param_df, site_i, mesh_land, sim_key) {
   if(grepl("D_h", this_param)) {
     param_df$post_mn <- log10(param_df$post_mn)
   }
+  this_scale <- get_param_scale(this_param, sim_key)
   param_df |>
     ggplot() + 
     geom_raster(aes(easting, northing, fill=post_mn)) +
-    stat_contour(aes(easting, northing, z=post_mn), colour="white", linewidth=0.1) +
+    stat_contour(aes(easting, northing, z=post_mn), colour="white", linewidth=0.1, breaks=this_scale$breaks) +
     geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
     geom_point(data=site_i, aes(easting, northing), shape=1, colour="black", size=0.4) +
-    get_param_scale(this_param, sim_key) + 
+    this_scale + 
     scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
     scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
     facet_wrap(~var_pretty, labeller=label_wrap_gen(19)) +
