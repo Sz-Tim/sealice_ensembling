@@ -81,10 +81,6 @@ for(i in 1:nrow(sim_i)) {
 
 
 
-
-
-
-
 # unweighted mean models --------------------------------------------------
 
 # Cross-validation
