@@ -1528,6 +1528,121 @@ ggsave(glue("figs/pub_new/ensBlend_{mod}_pParam_map.png"), p, height=10.2, width
 
 
 
+
+# regression slopes -------------------------------------------------------
+
+out_f <- c(paste0("out/candidates/sim_", str_pad(1:20, 2, "left", "0"), "_FULL_stanfit.rds"),
+           paste0("out/ensembles/", c("sim_avgAll", "ensBlend_n20_D4"), "_FULL_stanfit.rds"))
+
+beta_df <- out_f |>
+  map_dfr(~readRDS(.x) |>
+            as_draws_df() |>
+            rename_with(.fn=~str_remove(.x, "\\[1]"), .cols=everything()) |>
+            select(.draw, b_b0, b_IP) |>
+            mutate(f=basename(str_remove(.x, "_FULL_stanfit.rds")))) |>
+  mutate(modType=case_when(grepl("Blend", f) ~ "Ens['Blend']",
+                           grepl("avg", f) ~ "Ens['Avg']",
+                           .default="Constituent"),
+         modType=factor(modType, levels=names(modType_cols)),
+         b_b0_untrans=exp(b_b0)^4,
+         b_IP_untrans=exp(b_IP)) 
+
+
+reg_sum_df <- beta_df |>
+  mutate(AEIP_rtrt=list(seq(0, 2, length.out=50))) |>
+  unnest(AEIP_rtrt) |>
+  mutate(AEIP=AEIP_rtrt^4,
+         lpf=exp(b_b0 + b_IP*AEIP_rtrt)^4) |>
+  group_by(modType, f, AEIP) |>
+  summarise(mn=mean(lpf),
+            q025=quantile(lpf, prob=0.025),
+            q975=quantile(lpf, prob=0.975)) |>
+  ungroup() 
+
+pA <- beta_df |>
+  ggplot(aes(b_b0_untrans, colour=modType, linewidth=modType, group=f)) + 
+  geom_line(stat="density", adjust=1.2) +
+  scale_colour_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_linewidth_manual("Model type", values=c(1, 1, 0.2), labels=lab_expressions) +
+  labs(x=expression(paste("Hurdle intercept (mean AF lice per fish at AEIP=0, ", italic(e)^{4*beta[~~0]}, ")")),
+       y="Probability density") + 
+  theme(legend.position="inside", 
+        legend.position.inside=c(0.825, 0.825),
+        legend.title=element_text(size=8),
+        legend.text=element_text(size=7),
+        axis.title=element_text(size=9),
+        axis.text=element_text(size=8))
+
+pB <- beta_df |>
+  ggplot(aes(b_IP_untrans, colour=modType, linewidth=modType, group=f)) + 
+  geom_line(stat="density", adjust=1.2) +
+  scale_colour_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_linewidth_manual("Model type", values=c(1, 1, 0.2), labels=lab_expressions) +
+  labs(x=expression(paste("Multiplicative AEIP effect (", italic(e)^{italic(beta[~~1])}, ")")),
+       y="Probability density") +
+  theme(legend.position="none",
+        axis.title=element_text(size=9),
+        axis.text=element_text(size=8))
+
+
+pC <- ggplot(reg_sum_df, aes(AEIP, mn, group=f, colour=modType, fill=modType, linewidth=modType)) + 
+  geom_ribbon(data=reg_sum_df |> filter(modType != "Constituent"), 
+              aes(ymin=q025, ymax=q975), alpha=0.25, colour=NA) +
+  geom_line() +
+  scale_colour_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_fill_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_linewidth_manual("Model type", values=c(1, 1, 0.2), labels=lab_expressions) +
+  labs(x="AEIP",
+       y="Predicted AF lice per fish") +
+  theme(legend.position="none",
+        axis.title=element_text(size=9),
+        axis.text=element_text(size=8))
+
+pD <- ggplot(reg_sum_df, aes(AEIP, mn/AEIP, group=f, colour=modType, fill=modType, linewidth=modType)) +
+  geom_ribbon(data=reg_sum_df |> filter(modType != "Constituent"), 
+              aes(ymin=q025/AEIP, ymax=q975/AEIP), alpha=0.25, colour=NA) +
+  geom_line() +
+  scale_colour_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_fill_manual("Model type", values=modType_cols, labels=lab_expressions) +
+  scale_linewidth_manual("Model type", values=c(1, 1, 0.2), labels=lab_expressions) +
+  labs(x="AEIP",
+       y="(Predicted AF lice per fish) / AEIP") +
+  ylim(0, 1) +
+  theme(legend.position="none",
+        axis.title=element_text(size=9),
+        axis.text=element_text(size=8))
+
+p <- cowplot::plot_grid(pA, pB, pC, pD,
+                        nrow=2, align="hv", axis="tblr",
+                        labels="auto")
+ggsave("figs/pub_new/hurdle_beta_posteriors.png", p, height=8, width=9, dpi=300)
+
+
+p <- cowplot::plot_grid(pC + theme(legend.position="inside", 
+                                   legend.position.inside=c(0.15, 0.825),
+                                   legend.title=element_text(size=8),
+                                   legend.text=element_text(size=7)), 
+                        pD,
+                        nrow=1, align="hv", axis="tblr",
+                        labels="auto")
+ggsave("figs/pub_new/hurdle_beta_posteriors_2.png", p, height=4, width=9, dpi=300)
+
+
+beta_df |> 
+  group_by(f) |> 
+  summarise(mn=mean(b_b0_untrans), 
+            q025=quantile(b_b0_untrans, probs=0.025), 
+            q975=quantile(b_b0_untrans, probs=0.975))
+
+reg_sum_df |>
+  filter(modType=="Ens['Blend']") |>
+  mutate(mnRatio=mn/AEIP,
+         qloRatio=q025/AEIP,
+         qhiRatio=q975/AEIP) |>
+  slice_tail(n=40) |>
+  print(n=50)
+
+
 # parameterization performance --------------------------------------------
 
 sim_params <- read_csv("out/sim_2021-2024/sim_i.csv") |> 
