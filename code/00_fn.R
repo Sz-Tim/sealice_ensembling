@@ -592,6 +592,75 @@ metric_plot_base <- function(data, theme="ms", colours) {
 }
 
 
+metric_plot_AEIPsens_base <- function(data, theme="ms", colours) {
+  
+  if(theme=="ms") {
+    plot_theme <- theme(panel.grid.major.y=element_line(colour="grey85", linewidth=0.4),
+                        panel.grid.minor.y=element_line(colour="grey90", linewidth=0.2),
+                        axis.title.x=element_blank(),
+                        axis.title.y=element_text(size=9),
+                        axis.text.x=element_text(vjust=1, size=8),
+                        axis.text.y=element_text(size=8),
+                        legend.position="none")
+  } else if(theme=="talk") {
+    plot_theme <- theme(panel.grid.major.y=element_line(colour="grey85", linewidth=0.4),
+                        panel.grid.minor.y=element_line(colour="grey90", linewidth=0.2),
+                        axis.title.x=element_blank(),
+                        axis.title.y=element_text(size=9),
+                        axis.text.x=element_text(vjust=1, size=8),
+                        axis.text.y=element_text(size=8),
+                        legend.position="none")
+  } else {
+    plot_theme <- theme_classic()
+  }
+  
+  # adjusted for no EnsFcst, 'run' on x-axis; multi-panel with 'type'~'metric``
+  ggplot(data=data) + 
+    geom_point(aes(run, value, colour=lab_short, shape=lab_short, size=lab_short), stroke=0.7) +
+    geom_line(aes(run, value, colour=lab_short, linewidth=lab_short, group=sim)) +
+    scale_colour_manual(values=colours) +
+    scale_shape_manual(values=c(1, 1, 1, 4, 3) |> set_names(names(colours)[c(1:3,8:7)])) +
+    scale_size_manual(values=c(rep(2.5, 3), rep(1, 2)) |> set_names(names(colours)[c(1:3,7:8)])) +
+    scale_linewidth_manual(values=c(rep(0.5, 3), rep(0.1, 2)) |> set_names(names(colours)[c(1:3,7:8)])) +
+    plot_theme
+}
+
+
+
+metric_plot_TRTsens_base <- function(data, theme="ms", colours) {
+  
+  if(theme=="ms") {
+    plot_theme <- theme(panel.grid.major.y=element_line(colour="grey85", linewidth=0.3),
+                        panel.grid.minor.y=element_blank(),
+                        axis.title.x=element_blank(),
+                        axis.title.y=element_text(size=9),
+                        axis.text.x=element_text(vjust=1, size=8),
+                        axis.text.y=element_text(size=8),
+                        legend.position="none")
+  } else if(theme=="talk") {
+    plot_theme <- theme(panel.grid.major.y=element_line(colour="grey85", linewidth=0.3),
+                        panel.grid.minor.y=element_blank(),
+                        axis.title.x=element_blank(),
+                        axis.title.y=element_text(size=9),
+                        axis.text.x=element_text(vjust=1, size=8),
+                        axis.text.y=element_text(size=8),
+                        legend.position="none")
+  } else {
+    plot_theme <- theme_classic()
+  }
+  
+  # adjusted for no EnsFcst, 'run' on x-axis; multi-panel with 'type'~'metric``
+  ggplot(data=data) + 
+    geom_point(aes(dataset, value, colour=lab_short, shape=lab_short, size=lab_short), stroke=0.7) +
+    geom_line(aes(dataset, value, colour=lab_short, linewidth=lab_short, group=sim)) +
+    scale_colour_manual(values=colours) +
+    scale_shape_manual(values=c(1, 1, 1, 4, 3) |> set_names(names(colours)[c(1:3,8:7)])) +
+    scale_size_manual(values=c(rep(2.5, 3), rep(1, 2)) |> set_names(names(colours)[c(1:3,7:8)])) +
+    scale_linewidth_manual(values=c(rep(0.5, 3), rep(0.1, 2)) |> set_names(names(colours)[c(1:3,7:8)])) +
+    plot_theme
+}
+
+
 
 summarise_param_posterior <- function(post_df, sim_key, param) {
   post_df |>
