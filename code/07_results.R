@@ -6,11 +6,13 @@
 
 
 # setup -------------------------------------------------------------------
-library(tidyverse); library(glue)
+library(tidyverse)
+library(glue)
 library(sf)
 library(sevcheck) # devtools::install_github("Sz-Tim/sevcheck")
 library(biotrackR) # devtools::install_github("Sz-Tim/biotrackR")
 library(rstan)
+library(brms)
 library(yardstick)
 library(terra)
 library(recipes)
@@ -3895,3 +3897,744 @@ for(i in seq_along(example_f)) {
 }
 
 map(maxes, ~max(.x)^0.25)
+
+
+
+# AEIP popMod sensitivity -------------------------------------------------
+
+# . correlation -----------------------------------------------------------
+valid_sens_df <- read_csv("out/valid_sens_df_2021-2024.csv")
+valid_sens_df |>
+  select(-rowNum) |>
+  pivot_longer(starts_with("sim_"), names_to="sim", values_to="AEIP") |> 
+  mutate(sens=paste0("s", survAdjust, "d", devAdjust)) |> 
+  select(-survAdjust, -devAdjust) |> 
+  pivot_wider(names_from=sens, values_from=AEIP) |> 
+  select(10:18) |>
+  as.matrix() |>
+  cor(use="pairwise") |>
+  round(3)
+
+# . CV performance --------------------------------------------------------
+ensFull_sens_df <- read_csv("out/valid_sens_df_2021-2024.csv") |>
+  mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5))
+ensCV_sens_df <- ensFull_sens_df |> 
+  select(survAdjust, devAdjust, rowNum, sepaSite, CV_k, year, date, licePerFish_rtrt, lice_g05) |>
+  left_join(read_csv("out/candidates/AEIP_sens/CV_candidate_predictions.csv"),
+            by=join_by(rowNum, survAdjust, devAdjust)) |>
+  left_join(read_csv("out/ensembles/AEIP_sens/CV_avg_predictions.csv") |>
+              select(rowNum, survAdjust, devAdjust, IP_sim_avgAll),
+            by=join_by(rowNum, survAdjust, devAdjust)) |>
+  left_join(read_csv("out/ensembles/AEIP_sens/CV_ensBlend_predictions.csv") |>
+              select(rowNum, survAdjust, devAdjust, IP_D4_n20) |> rename(IP_predBlend=IP_D4_n20),
+            by=join_by(rowNum, survAdjust, devAdjust))
+folds <- unique(ensFull_sens_df$CV_k)
+ensNull_0 <- ensNull_time <- ensNull_farm <- vector("list", length(folds))
+for(k in seq_along(folds)) {
+  ensNull_0[[k]] <- ensFull_sens_df |>
+    filter(CV_k != folds[k]) |>
+    summarise(IP_null0=mean(licePerFish_rtrt), .by=c(survAdjust, devAdjust)) |>
+    mutate(CV_k=folds[k])
+  ensNull_time[[k]] <- ensFull_sens_df |>
+    filter(CV_k != folds[k]) |>
+    mutate(week=floor(week(date)/2)) |>
+    summarise(IP_nullTime=mean(licePerFish_rtrt), .by=c(week, survAdjust, devAdjust)) |>
+    mutate(CV_k=folds[k])
+  ensNull_farm[[k]] <- ensFull_sens_df |>
+    filter(CV_k != folds[k]) |>
+    summarise(IP_nullFarm=mean(licePerFish_rtrt), .by=c(sepaSite, survAdjust, devAdjust)) |>
+    full_join(site_i |> select(sepaSite), by=join_by(sepaSite)) |>
+    group_by(survAdjust, devAdjust) |>
+    mutate(IP_nullFarm=if_else(is.na(IP_nullFarm), mean(IP_nullFarm, na.rm=T), IP_nullFarm),
+           CV_k=folds[k]) |>
+    ungroup()
+}
+ensCV_sens_df <- ensCV_sens_df |>
+  left_join(reduce(ensNull_0, bind_rows), by=join_by(CV_k, survAdjust, devAdjust)) |>
+  mutate(week=floor(week(date)/2)) |>
+  left_join(reduce(ensNull_time, bind_rows), by=join_by(CV_k, week, survAdjust, devAdjust)) |>
+  select(-week) |>
+  left_join(reduce(ensNull_farm, bind_rows), by=join_by(CV_k, sepaSite, survAdjust, devAdjust))
+write_csv(ensCV_sens_df, "out/ensemble_CV_AEIPsens.csv")
+
+ensCV_sens_df <- read_csv("out/ensemble_CV_AEIPsens.csv") |>
+  filter(date >= "2021-05-01") |>
+  mutate(lice_g05=factor(lice_g05)) 
+
+# Mean within site
+metrics_by_farm <- ensCV_sens_df |>
+  pivot_longer(starts_with("IP_"), names_to="sim") |>
+  mutate(sim=str_remove(sim, "IP_")) |>
+  summarise(rmse=rmse_vec(value, truth=licePerFish_rtrt),
+            rho=cor(value, licePerFish_rtrt, method="spearman", use="pairwise"),
+            ROC_AUC=roc_auc_vec(value, truth=lice_g05, event_level="second"),
+            N=n(),
+            prop_g05=mean(lice_g05=="TRUE"),
+            prop_0=mean(licePerFish_rtrt==0),
+            .by=c(sepaSite, sim, survAdjust, devAdjust)) |>
+  mutate(rho=if_else(is.na(rho), 0, rho),
+         ROC_AUC=if_else(is.na(ROC_AUC), 0.5, ROC_AUC))
+
+# Mean among site
+metrics_by_week <- ensCV_sens_df |>
+  pivot_longer(starts_with("IP_"), names_to="sim") |>
+  mutate(sim=str_remove(sim, "IP_")) |>
+  summarise(rmse=rmse_vec(value, truth=licePerFish_rtrt),
+            rho=cor(value, licePerFish_rtrt, method="spearman", use="pairwise"),
+            ROC_AUC=roc_auc_vec(value, truth=lice_g05, event_level="second"),
+            N=n(),
+            prop_g05=mean(lice_g05=="TRUE"),
+            prop_0=mean(licePerFish_rtrt==0),
+            .by=c(date, sim, survAdjust, devAdjust)) |>
+  mutate(rho=if_else(is.na(rho), 0, rho),
+         ROC_AUC=if_else(is.na(ROC_AUC), 0.5, ROC_AUC))
+
+# Means
+metrics_by_farm_mn <- metrics_by_farm |>
+  filter(N >= 10) |>
+  summarise(rmse=mean(rmse, na.rm=T),
+            rho=mean(rho, na.rm=T),
+            ROC_AUC=mean(ROC_AUC, na.rm=T),
+            N=mean(N, na.rm=T),
+            prop_g05=mean(prop_g05),
+            prop_0=mean(prop_0, na.rm=T),
+            .by=c(sim, survAdjust, devAdjust))
+metrics_by_week_mn <- metrics_by_week |>
+  filter(N >= 10) |>
+  summarise(rmse=mean(rmse, na.rm=T),
+            rho=mean(rho, na.rm=T),
+            ROC_AUC=mean(ROC_AUC, na.rm=T),
+            N=mean(N, na.rm=T),
+            prop_g05=mean(prop_g05),
+            prop_0=mean(prop_0, na.rm=T),
+            .by=c(sim, survAdjust, devAdjust))
+
+all_metrics_df <- bind_rows(
+  metrics_by_farm_mn |> mutate(type="byFarm"),
+  metrics_by_week_mn |> mutate(type="byWeek")
+) |>
+  filter(sim != "null0") |>
+  pivot_longer(any_of(c("rmse", "rho", "ROC_AUC")), names_to="metric") |>
+  mutate(metric=factor(metric, levels=c("ROC_AUC", "rho", "rmse"),
+                       labels=c("'AUC'['ROC']", "rho", "RMSE"))) |>
+  left_join(sim_i) |>
+  arrange(lab) |>
+  mutate(type=factor(type, 
+                     levels=c("byFarm", "byWeek"),
+                     labels=c("By farm", "By week"))) |>
+  drop_na() |>
+  arrange(desc(lab), devAdjust, survAdjust) |>
+  mutate(devAdjust=case_when(devAdjust==0.9 ~ "-",
+                             devAdjust==1 ~ "",
+                             devAdjust==1.1 ~ "+"),
+         survAdjust=case_when(survAdjust==0.9 ~ "-",
+                              survAdjust==1 ~ "",
+                              survAdjust==1.1 ~ "+"),
+         run=paste0("τ", devAdjust, "\ns", survAdjust),
+         run=factor(run, levels=unique(run)))
+
+all_metrics_labs <- all_metrics_df |>
+  filter(metric=="RMSE",
+         type=="By farm",
+         grepl("Ens", lab_short),
+         survAdjust=="", devAdjust=="") |>
+  arrange(lab) |>
+  mutate(label=c("Ens['Blend']", "Ens['Avg']")) |>
+  bind_rows(tibble(sim=c("3D.1", "2D.1"),
+                   N=1, prop_g05=1, prop_0=1,
+                   type="By farm",
+                   metric="RMSE",
+                   lab=c("3D.1", "2D.1"),
+                   lab_short=c("3D", "2D"),
+                   label=c("'3D'", "'2D'"))) |>
+  mutate(value=seq(0.975, 0.84, length.out=n()))
+
+ms_rmse <- all_metrics_df |> filter(metric=="RMSE") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous("RMSE", limits=c(0.25, 0.35), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.05), minor_breaks=seq(0, 1, by=0.01)) +
+  ggtitle("Mean within week")
+ms_r <- all_metrics_df |> filter(metric=="rho") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('Spearmans'~~rho), limits=c(0, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.25), minor_breaks=seq(0, 1, by=0.05))
+ms_ROC <- all_metrics_df |> filter(metric=="'AUC'['ROC']") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('AUC'['ROC']), limits=c(0.5, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0.5, 1, by=0.1), minor_breaks=seq(0.5, 1, by=0.02))
+ms_legend <- all_metrics_labs |>
+  filter(!grepl("null", sim)) |>
+  mutate(label=factor(label, levels=unique(label)),
+         lab_short=factor(lab_short, levels=unique(lab_short))) |>
+  ggplot() +
+  geom_text(aes(type, value, label=label, colour=lab_short),
+            hjust=0, nudge_x=-0.15, vjust=0.5, size=2.5, parse=T) +
+  geom_point(position=position_nudge(x=-0.35), stroke=0.7,
+             aes(type, value, colour=lab_short, shape=lab_short, size=lab_short)) +
+  scale_colour_manual(values=modType3_cols) +
+  scale_shape_manual(values=c(1, 1, 1, 4, 3) |> set_names(names(modType3_cols)[c(1:3,8:7)])) +
+  scale_size_manual(values=c(rep(2.5, 3), rep(1, 2)) |> set_names(names(modType3_cols)[c(1:3,7:8)])) +
+  ylim(0.575, 1.175) +
+  theme(legend.position="none",
+        plot.margin=margin(t=0, b=0, l=0, r=0),
+        panel.border=element_blank(),
+        axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+pA <- plot_grid(ms_rmse, ms_r, ms_ROC, ms_legend, 
+               align="h", axis="tb", nrow=1, rel_widths=c(1.12, 1.12, 1.12, 0.4))
+
+ms_rmse <- all_metrics_df |> filter(metric=="RMSE") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous("RMSE", limits=c(0.25, 0.35), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.05), minor_breaks=seq(0, 1, by=0.01)) +
+  ggtitle("Mean within farm")
+ms_r <- all_metrics_df |> filter(metric=="rho") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('Spearmans'~~rho), limits=c(0, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.25), minor_breaks=seq(0, 1, by=0.05))
+ms_ROC <- all_metrics_df |> filter(metric=="'AUC'['ROC']") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_AEIPsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('AUC'['ROC']), limits=c(0.5, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0.5, 1, by=0.1), minor_breaks=seq(0.5, 1, by=0.02))
+pB <- plot_grid(ms_rmse, ms_r, ms_ROC, ms_legend, 
+                align="h", axis="tb", nrow=1, rel_widths=c(1.12, 1.12, 1.12, 0.4))
+p <- plot_grid(pA, pB, align="v", axis="lr", nrow=2, ncol=1, labels="AUTO")
+ggsave("figs/pub_new/validation_metrics_CV_means_AEIPsens.png", p, width=10, height=6)
+
+
+
+# . ensBlend p maps -------------------------------------------------------
+dat_ensBlend <- readRDS("out/ensembles/ensBlend_n20_D4_FULL_standata.rds")
+ensFull_LatLon <- read_csv("out/valid_df_2021-2024.csv") |>
+  select(rowNum, date, CV_k, sepaSite, sepaSiteNum, licePerFish_rtrt, starts_with("sim")) |>
+  select(-contains("avg")) |>
+  mutate(across(starts_with("sim_"), ~.x - mean(.x), .names="c_{.col}")) |>
+  left_join(site_i) |>
+  select(-sepaSite) |>
+  arrange(rowNum)
+ensBlend_rec <- make_spline_recipe(ensFull_LatLon, 4, sim_i$sim[1:20])
+mesh_fp <- st_read("data/WeStCOMS2_meshFootprint.gpkg")
+mesh_bbox <- st_bbox(mesh_fp)
+mesh_land <- st_convex_hull(mesh_fp) |>
+  st_difference(mesh_fp) |>
+  st_crop(site_i |> st_as_sf(coords=c("easting", "northing"), crs=27700) |> st_buffer(10e3))
+
+# blending proportions by parameter: maps
+map_df <- expand_grid(easting=seq(min(site_i$easting)-30e3, max(site_i$easting)+30e3, by=4e3),
+                      northing=seq(min(site_i$northing)-30e3, max(site_i$northing)+30e3, by=4e3)) |>
+  st_as_sf(coords=c("easting", "northing"), crs=27700, remove=F) |>
+  st_intersection(st_buffer(mesh_fp, 5e3)) |>
+  st_intersection(site_i |> 
+                    st_as_sf(coords=c("easting", "northing"), crs=27700) |> 
+                    st_buffer(50e3) |> 
+                    st_union()) |>
+  st_drop_geometry() |>
+  mutate(sepaSiteNum=row_number()) |>
+  bind_cols(ensFull_LatLon |> summarise(across(c(licePerFish_rtrt, contains("sim")), mean))) 
+
+n_iter <- 2000
+sens_out_f <- dir("out/ensembles/AEIP_sens/", "_stanfit.rds", full.names=T)
+sens_p_map_ls <- vector("list", length(sens_out_f))
+for(i in 1:length(sens_out_f)) {
+  sens_b_p <- make_predictions_ensBlend_sLonLat(readRDS(sens_out_f[i]), 
+                                                newdata=bake(ensBlend_rec, map_df), 
+                                                iter=n_iter, mode="b_p")
+  sens_p_map_ls[[i]] <- map_dfr(1:n_iter, 
+                                ~as_tibble(sens_b_p[,.x,]) |>
+                                  set_names(dat_ensBlend$sim_names) |>
+                                  mutate(rowNum=row_number(),
+                                         iter=.x)) |> 
+    pivot_longer(starts_with("sim"), names_to="sim", values_to="p") |>
+    group_by(sim, rowNum) |>
+    summarise(p_mn=mean(p),
+              p_sd=sd(p)) |>
+    ungroup() |>
+    mutate(run=basename(sens_out_f[i]) |> 
+             str_remove("ensBlend_") |> 
+             str_remove("_stanfit.rds"))
+}
+sens_p_map_df <- bind_rows(sens_p_map_ls) |>
+  full_join(map_df |> select(easting, northing) |> mutate(rowNum=row_number()),
+            by=join_by(rowNum)) |>
+  mutate(survAdj=str_split_fixed(run, "_", 2)[,1],
+         devAdj=str_split_fixed(run, "_", 2)[,2]) |>
+  select(-run) |>
+  mutate(survAdj=factor(survAdj, 
+                        levels=paste0("s", c(0.9, 1, 1.1)),
+                        labels=c("s - 10%", "s", "s + 10%")),
+         devAdj=factor(devAdj, 
+                       levels=paste0("d", c(0.9, 1, 1.1)),
+                       labels=c("tau - 10%", "tau", "tau + 10%")))
+
+p <- sens_p_map_df |>
+  filter(sim %in% paste0("sim_", c("02", "03", "07", "11", "19"))) |>
+  ggplot() + 
+  geom_raster(aes(easting, northing, fill=p_mn)) +
+  stat_contour(aes(easting, northing, z=p_mn), colour="white", linewidth=0.1) +
+  colorspace::scale_fill_continuous_sequential(name="Posterior mean weight (p)",
+                                               palette="GnBu",
+                                               rev=T,
+                                               limits=c(0, 1),
+                                               breaks=c(0, 0.5, 1)) +
+  geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+  scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+  scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+  facet_grid(sim ~ devAdj*survAdj) +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position="bottom",
+        legend.title.position="top",
+        legend.title=element_text(size=9, hjust=0.5),
+        legend.box.margin=margin(0,0,0,0),
+        legend.margin=margin(0,0,0,0),
+        legend.key.height=unit(0.2, "cm"),
+        legend.key.width=unit(0.8, "cm"),
+        legend.text=element_text(size=6),
+        panel.spacing=unit(0.1, 'cm'))
+ggsave(glue("figs/pub_new/AEIP_sensitivity_map.png"), p, height=12, width=10, dpi=200)
+
+p <- sens_p_map_df |>
+  filter(sim %in% paste0("sim_", c("02", "03", "07", "11", "19"))) |>
+  group_by(rowNum, sim) |>
+  mutate(p_anom=p_mn - sum(p_mn * (survAdj=="s" & devAdj=="tau"))) |>
+  ungroup() |>
+  ggplot() + 
+  geom_raster(aes(easting, northing, fill=p_anom)) +
+  stat_contour(aes(easting, northing, z=p_anom), colour="white", linewidth=0.1) +
+  scale_fill_gradient2() +
+  geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+  scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+  scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+  facet_grid(sim ~ devAdj*survAdj) +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position="bottom",
+        legend.title.position="top",
+        legend.title=element_text(size=9, hjust=0.5),
+        legend.box.margin=margin(0,0,0,0),
+        legend.margin=margin(0,0,0,0),
+        legend.key.height=unit(0.2, "cm"),
+        legend.key.width=unit(0.8, "cm"),
+        legend.text=element_text(size=6),
+        panel.spacing=unit(0.1, 'cm'))
+ggsave(glue("figs/pub_new/AEIP_sensitivity_map_anomaly.png"), p, height=12, width=10, dpi=200)
+
+p <- sens_p_map_df |>
+  filter(sim == "sim_07") |>
+  group_by(rowNum) |>
+  mutate(p_anom=p_mn - mean(p_mn)) |>
+  ggplot() + 
+  geom_raster(aes(easting, northing, fill=p_anom)) +
+  stat_contour(aes(easting, northing, z=p_anom), colour="white", linewidth=0.1) +
+  scale_fill_gradient2() +
+  geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+  scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+  scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+  facet_grid(survAdj~devAdj) +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position="bottom",
+        legend.title.position="top",
+        legend.title=element_text(size=9, hjust=0.5),
+        legend.box.margin=margin(0,0,0,0),
+        legend.margin=margin(0,0,0,0),
+        legend.key.height=unit(0.2, "cm"),
+        legend.key.width=unit(0.8, "cm"),
+        legend.text=element_text(size=6),
+        panel.spacing=unit(0.1, 'cm'))
+ggsave(glue("figs/pub_new/AEIP_sensitivity_map_sim07.png"), p, height=12, width=7, dpi=200)
+
+p <- sens_p_map_df |>
+  filter(sim %in% paste0("sim_", c("02", "03", "07", "11", "19"))) |>
+  group_by(sim, easting, northing) |>
+  summarise(p_mn_sd=sd(p_mn)) |>
+  ggplot() + 
+  geom_raster(aes(easting, northing, fill=p_mn_sd)) +
+  stat_contour(aes(easting, northing, z=p_mn_sd), colour="white", linewidth=0.1) +
+  geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+  scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+  scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+  facet_wrap(~sim) +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position="bottom",
+        legend.title.position="top",
+        legend.title=element_text(size=9, hjust=0.5),
+        legend.box.margin=margin(0,0,0,0),
+        legend.margin=margin(0,0,0,0),
+        legend.key.height=unit(0.2, "cm"),
+        legend.key.width=unit(0.8, "cm"),
+        legend.text=element_text(size=6),
+        panel.spacing=unit(0.1, 'cm'))
+ggsave(glue("figs/pub_new/AEIP_sensitivity_map_sd.png"), p, height=12, width=7, dpi=200)
+
+p <- sens_p_map_df |>
+  filter(sim %in% paste0("sim_", c("02", "03", "07", "11", "19"))) |>
+  group_by(sim, easting, northing) |>
+  summarise(p_mn_sd=sd(p_mn)/mean(p_mn)) |>
+  ggplot() + 
+  geom_raster(aes(easting, northing, fill=p_mn_sd)) +
+  stat_contour(aes(easting, northing, z=p_mn_sd), colour="white", linewidth=0.1) +
+  geom_sf(data=mesh_land, fill="grey90", colour="grey40", linewidth=0.1) +
+  scale_x_continuous(limits=range(site_i$easting)*c(0.96, 1), oob=scales::oob_keep) +
+  scale_y_continuous(limits=range(site_i$northing), oob=scales::oob_keep) +
+  facet_wrap(~sim) +
+  theme(axis.text=element_blank(),
+        axis.title=element_blank(),
+        axis.ticks=element_blank(),
+        legend.position="bottom",
+        legend.title.position="top",
+        legend.title=element_text(size=9, hjust=0.5),
+        legend.box.margin=margin(0,0,0,0),
+        legend.margin=margin(0,0,0,0),
+        legend.key.height=unit(0.2, "cm"),
+        legend.key.width=unit(0.8, "cm"),
+        legend.text=element_text(size=6),
+        panel.spacing=unit(0.1, 'cm'))
+ggsave(glue("figs/pub_new/AEIP_sensitivity_map_CV.png"), p, height=12, width=7, dpi=200)
+
+# . ensBlend p posteriors -------------------------------------------------
+out_f <- dir("out/ensembles/AEIP_sens/", "_stanfit.rds", full.names=T)
+b_s_post <- out_f |>
+  map_dfr(~readRDS(.x) |>
+            as_draws_df() |>
+            select(starts_with("b_s_"), ".draw") |>
+            mutate(run=basename(.x) |> 
+                     str_remove("ensBlend_") |> 
+                     str_remove("_stanfit.rds"))) |>
+  mutate(survAdj=str_split_fixed(run, "_", 2)[,1],
+         devAdj=str_split_fixed(run, "_", 2)[,2]) |>
+  mutate(survAdj=factor(survAdj, 
+                        levels=paste0("s", c(0.9, 1, 1.1)),
+                        labels=c("s - 10%", "s", "s + 10%")),
+         devAdj=factor(devAdj, 
+                       levels=paste0("d", c(0.9, 1, 1.1)),
+                       labels=c("tau - 10%", "tau", "tau + 10%"))) |>
+  pivot_longer(cols=starts_with("b_s_"), names_to="param", values_to="value") |>
+  mutate(sim=paste0("sim_", str_pad(str_remove(str_split_fixed(param, ",", 2)[,2], "]"), 2, "left", "0")),
+         knot=str_split_fixed(str_split_fixed(param, "\\[", 2)[,2], ",", 2)[,1],
+         direction=str_remove(str_split_fixed(param, "\\[", 2)[,1], "b_s_"),
+         direction=factor(direction, 
+                          levels=c("easting", "northing", "easting_x_northing"),
+                          labels=c("lon", "lat", "lon:lat")))
+p <- b_s_post |>
+  filter(sim %in% paste0("sim_", c("02", "03", "07", "11", "19"))) |>
+  left_join(sim_i) |>
+  ggplot(aes(value, y=lab, #group=paste(sim, devAdj, survAdj), 
+             colour=devAdj, shape=survAdj)) +
+  stat_summary(fun.data="mean_sd", linewidth=0.2, size=0.25,
+               position=position_dodge(width=0.75, orientation="y")) +
+  scale_colour_manual("Development", 
+                     values=c("tau - 10%"="red3", "tau"="grey50", "tau + 10%"="blue3"),
+                     labels=c("τ - 10%", "τ", "τ + 10%")) +
+  scale_shape_manual("Survival", 
+                      values=c("s - 10%"=4, "s"=1, "s + 10%"=3)) +
+  facet_grid(direction~knot)
+ggsave(glue("figs/pub_new/AEIP_sensitivity_b_s.png"), p, height=12, width=8, dpi=200)
+
+
+
+
+# treatment sensitivity ---------------------------------------------------
+
+
+# . proportion affected ---------------------------------------------------
+
+trt_df <- full_join(
+  read_csv("out/valid_df_2021-2024_inclPostTreat.csv") |>
+    select(sepaSite, date, licePerFish_rtrt),
+  read_csv("out/valid_df_2021-2024.csv") |>
+    select(sepaSite, date, licePerFish_rtrt) |>
+    mutate(trt="pre")
+)
+mean(!is.na(trt_df$trt))
+
+trt_df |>
+  summarise(prPreTreat=mean(!is.na(trt)), 
+            .by=sepaSite) |>
+  summarise(prop_100=mean(prPreTreat==1),
+            prop_90=mean(prPreTreat>0.9),
+            prop_80=mean(prPreTreat>0.8),
+            prop_70=mean(prPreTreat>0.7),
+            prop_60=mean(prPreTreat>0.6),
+            prop_50=mean(prPreTreat>0.5))
+
+
+# . correlation -----------------------------------------------------------
+
+comp_df <- full_join(
+  read_csv("out/valid_df_2021-2024.csv") |>
+    select(rowNum, sepaSite, date, licePerFish_rtrt) |>
+    left_join(read_csv("out/candidates/CV_candidate_predictions.csv")) |>
+    left_join(read_csv("out/ensembles/CV_avg_predictions.csv") |>
+                select(rowNum, IP_sim_avgAll)) |>
+    left_join(read_csv("out/ensembles/CV_ensBlend_predictions.csv") |>
+                select(rowNum, IP_D4_n20) |> rename(IP_predBlend=IP_D4_n20)) |>
+    select(-rowNum) |>
+    pivot_longer(starts_with("IP"), names_to="model", values_to="lpf_og"),
+  read_csv("out/valid_df_2021-2024_inclPostTreat.csv") |>
+    select(rowNum, sepaSite, date, licePerFish_rtrt) |>
+    left_join(read_csv("out/candidates/TRT_sens/CV_candidate_predictions.csv")) |>
+    left_join(read_csv("out/ensembles/TRT_sens/CV_avg_predictions.csv") |>
+                select(rowNum, IP_sim_avgAll)) |>
+    left_join(read_csv("out/ensembles/TRT_sens/CV_ensBlend_predictions.csv") |>
+                select(rowNum, IP_D4_n20) |> rename(IP_predBlend=IP_D4_n20)) |>
+    select(-rowNum) |>
+    pivot_longer(starts_with("IP"), names_to="model", values_to="lpf_new"),
+  by=join_by(sepaSite, date, licePerFish_rtrt, model)
+)
+
+comp_df |>
+  summarise(r=cor(lpf_og, lpf_new, use="pairwise"), 
+            .by=model) |> 
+  print.AsIs()
+
+comp_df |>
+  summarise(r=cor(lpf_og, lpf_new, use="pairwise"), 
+            .by=c(model, sepaSite)) |> 
+  ggplot(aes(r, model)) + 
+  geom_point(shape=1, alpha=0.25)
+
+
+# . CV performance --------------------------------------------------------
+
+ensCV_trt_df <- bind_rows(
+  read_csv("out/valid_df_2021-2024.csv") |>
+    select(rowNum, sepaSite, date, CV_k, licePerFish_rtrt) |>
+    left_join(read_csv("out/candidates/CV_candidate_predictions.csv")) |>
+    left_join(read_csv("out/ensembles/CV_avg_predictions.csv") |>
+                select(rowNum, IP_sim_avgAll)) |>
+    left_join(read_csv("out/ensembles/CV_ensBlend_predictions.csv") |>
+                select(rowNum, IP_D4_n20) |> rename(IP_predBlend=IP_D4_n20)) |>
+    select(-rowNum) |>
+    mutate(dataset="preTrt"),
+  read_csv("out/valid_df_2021-2024_inclPostTreat.csv") |>
+    select(rowNum, sepaSite, date, CV_k, licePerFish_rtrt) |>
+    left_join(read_csv("out/candidates/TRT_sens/CV_candidate_predictions.csv")) |>
+    left_join(read_csv("out/ensembles/TRT_sens/CV_avg_predictions.csv") |>
+                select(rowNum, IP_sim_avgAll)) |>
+    left_join(read_csv("out/ensembles/TRT_sens/CV_ensBlend_predictions.csv") |>
+                select(rowNum, IP_D4_n20) |> rename(IP_predBlend=IP_D4_n20)) |>
+    select(-rowNum) |>
+    mutate(dataset="full")
+) |>
+  mutate(lice_g05=factor(licePerFish_rtrt^4 > 0.5))
+folds <- unique(ensCV_trt_df$CV_k)
+ensNull_0 <- ensNull_time <- ensNull_farm <- vector("list", length(folds))
+for(k in seq_along(folds)) {
+  ensNull_0[[k]] <- ensCV_trt_df |>
+    filter(CV_k != folds[k]) |>
+    summarise(IP_null0=mean(licePerFish_rtrt), .by=c(dataset)) |>
+    mutate(CV_k=folds[k])
+  ensNull_time[[k]] <- ensCV_trt_df |>
+    filter(CV_k != folds[k]) |>
+    mutate(week=floor(week(date)/2)) |>
+    summarise(IP_nullTime=mean(licePerFish_rtrt), .by=c(week, dataset)) |>
+    mutate(CV_k=folds[k])
+  ensNull_farm[[k]] <- ensCV_trt_df |>
+    filter(CV_k != folds[k]) |>
+    summarise(IP_nullFarm=mean(licePerFish_rtrt), .by=c(sepaSite, dataset)) |>
+    full_join(site_i |> select(sepaSite), by=join_by(sepaSite)) |>
+    group_by(dataset) |>
+    mutate(IP_nullFarm=if_else(is.na(IP_nullFarm), mean(IP_nullFarm, na.rm=T), IP_nullFarm),
+           CV_k=folds[k]) |>
+    ungroup()
+}
+ensCV_trt_df <- ensCV_trt_df |>
+  left_join(reduce(ensNull_0, bind_rows), by=join_by(CV_k, dataset)) |>
+  mutate(week=floor(week(date)/2)) |>
+  left_join(reduce(ensNull_time, bind_rows), by=join_by(CV_k, week, dataset)) |>
+  select(-week) |>
+  left_join(reduce(ensNull_farm, bind_rows), by=join_by(CV_k, sepaSite, dataset))
+write_csv(ensCV_trt_df, "out/ensemble_CV_TRTsens.csv")
+
+ensCV_trt_df <- read_csv("out/ensemble_CV_TRTsens.csv") |>
+  filter(date >= "2021-05-01") |>
+  mutate(lice_g05=factor(lice_g05)) 
+
+# Mean within site
+metrics_by_farm <- ensCV_trt_df |>
+  pivot_longer(starts_with("IP_"), names_to="sim") |>
+  mutate(sim=str_remove(sim, "IP_")) |>
+  summarise(rmse=rmse_vec(value, truth=licePerFish_rtrt),
+            rho=cor(value, licePerFish_rtrt, method="spearman", use="pairwise"),
+            ROC_AUC=roc_auc_vec(value, truth=lice_g05, event_level="second"),
+            N=n(),
+            prop_g05=mean(lice_g05=="TRUE"),
+            prop_0=mean(licePerFish_rtrt==0),
+            .by=c(sepaSite, sim, dataset)) |>
+  mutate(rho=if_else(is.na(rho), 0, rho),
+         ROC_AUC=if_else(is.na(ROC_AUC), 0.5, ROC_AUC))
+
+# Mean among site
+metrics_by_week <- ensCV_trt_df |>
+  pivot_longer(starts_with("IP_"), names_to="sim") |>
+  mutate(sim=str_remove(sim, "IP_")) |>
+  summarise(rmse=rmse_vec(value, truth=licePerFish_rtrt),
+            rho=cor(value, licePerFish_rtrt, method="spearman", use="pairwise"),
+            ROC_AUC=roc_auc_vec(value, truth=lice_g05, event_level="second"),
+            N=n(),
+            prop_g05=mean(lice_g05=="TRUE"),
+            prop_0=mean(licePerFish_rtrt==0),
+            .by=c(date, sim, dataset)) |>
+  mutate(rho=if_else(is.na(rho), 0, rho),
+         ROC_AUC=if_else(is.na(ROC_AUC), 0.5, ROC_AUC))
+
+# Means
+metrics_by_farm_mn <- metrics_by_farm |>
+  filter(N >= 10) |>
+  summarise(rmse=mean(rmse, na.rm=T),
+            rho=mean(rho, na.rm=T),
+            ROC_AUC=mean(ROC_AUC, na.rm=T),
+            N=mean(N, na.rm=T),
+            prop_g05=mean(prop_g05),
+            prop_0=mean(prop_0, na.rm=T),
+            .by=c(sim, dataset))
+metrics_by_week_mn <- metrics_by_week |>
+  filter(N >= 10) |>
+  summarise(rmse=mean(rmse, na.rm=T),
+            rho=mean(rho, na.rm=T),
+            ROC_AUC=mean(ROC_AUC, na.rm=T),
+            N=mean(N, na.rm=T),
+            prop_g05=mean(prop_g05),
+            prop_0=mean(prop_0, na.rm=T),
+            .by=c(sim, dataset))
+
+all_metrics_df <- bind_rows(
+  metrics_by_farm_mn |> mutate(type="byFarm"),
+  metrics_by_week_mn |> mutate(type="byWeek")
+) |>
+  filter(sim != "null0") |>
+  pivot_longer(any_of(c("rmse", "rho", "ROC_AUC")), names_to="metric") |>
+  mutate(metric=factor(metric, levels=c("ROC_AUC", "rho", "rmse"),
+                       labels=c("'AUC'['ROC']", "rho", "RMSE"))) |>
+  left_join(sim_i) |>
+  arrange(lab) |>
+  mutate(type=factor(type, 
+                     levels=c("byFarm", "byWeek"),
+                     labels=c("By farm", "By week"))) |>
+  drop_na() |>
+  arrange(desc(lab), dataset) |>
+  mutate(dataset=factor(dataset, levels=c("preTrt", "full"), labels=c("Pre-treatment", "All data")))
+
+all_metrics_labs <- all_metrics_df |>
+  filter(metric=="RMSE",
+         type=="By farm",
+         grepl("Ens", lab_short),
+         dataset=="All data") |>
+  arrange(lab) |>
+  mutate(label=c("Ens['Blend']", "Ens['Avg']")) |>
+  bind_rows(tibble(sim=c("3D.1", "2D.1"),
+                   N=1, prop_g05=1, prop_0=1,
+                   type="By farm",
+                   metric="RMSE",
+                   lab=c("3D.1", "2D.1"),
+                   lab_short=c("3D", "2D"),
+                   label=c("'3D'", "'2D'"))) |>
+  mutate(value=seq(0.975, 0.84, length.out=n()))
+
+ms_rmse <- all_metrics_df |> filter(metric=="RMSE") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous("RMSE", limits=c(0.25, 0.35), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.05), minor_breaks=seq(0, 1, by=0.01)) +
+  ggtitle("Mean within week")
+ms_r <- all_metrics_df |> filter(metric=="rho") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('Spearmans'~~rho), limits=c(0, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.25), minor_breaks=seq(0, 1, by=0.05))
+ms_ROC <- all_metrics_df |> filter(metric=="'AUC'['ROC']") |>
+  filter(type=="By week") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('AUC'['ROC']), limits=c(0.5, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0.5, 1, by=0.1), minor_breaks=seq(0.5, 1, by=0.02))
+pA <- plot_grid(ms_rmse, ms_r, ms_ROC, align="h", axis="tb", nrow=1)
+
+ms_rmse <- all_metrics_df |> filter(metric=="RMSE") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous("RMSE", limits=c(0.25, 0.35), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.05), minor_breaks=seq(0, 1, by=0.01)) +
+  ggtitle("Mean within farm")
+ms_r <- all_metrics_df |> filter(metric=="rho") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('Spearmans'~~rho), limits=c(0, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0, 1, by=0.25), minor_breaks=seq(0, 1, by=0.05))
+ms_ROC <- all_metrics_df |> filter(metric=="'AUC'['ROC']") |>
+  filter(type=="By farm") |>
+  filter(!grepl("null", sim)) |>
+  metric_plot_TRTsens_base(theme="ms", modType3_cols) + 
+  scale_y_continuous(expression('AUC'['ROC']), limits=c(0.5, 1), oob=scales::oob_keep, expand=c(0,0),
+                     breaks=seq(0.5, 1, by=0.1), minor_breaks=seq(0.5, 1, by=0.02))
+pB <- plot_grid(ms_rmse, ms_r, ms_ROC, align="h", axis="tb", nrow=1)
+
+pAB <- plot_grid(pA, pB, align="v", axis="lr", nrow=2, ncol=1, labels="AUTO")
+
+
+pC <- all_metrics_df |> 
+  filter(!grepl("null", sim)) |>
+  arrange(dataset) |> 
+  summarise(full_m_pt=last(value)-first(value), 
+            .by=c(sim, type, metric, lab, lab_short)) |>
+  mutate(type=lvls_revalue(type, paste("Mean within", c("farm", "week")))) |>
+  ggplot() +
+  geom_hline(yintercept=0, linetype=3, colour="grey", linewidth=0.4) +
+  geom_point(aes(type, full_m_pt, colour=lab_short, shape=lab_short, size=lab_short), stroke=0.7) +
+  scale_colour_manual(values=modType3_cols) +
+  scale_shape_manual(values=c(1, 1, 1, 4, 3) |> set_names(names(modType3_cols)[c(1:3,8:7)])) +
+  scale_size_manual(values=c(rep(2.5, 3), rep(1, 2)) |> set_names(names(modType3_cols)[c(1:3,7:8)])) +
+  facet_grid(metric~., labeller=label_parsed, scales="free_y") +
+  ylab(expression('Metric'['All data']~~-~~'Metric'['Pre-treatment'])) +
+  scale_x_discrete(labels=label_wrap_gen(12)) +
+  theme(legend.position="none", 
+        panel.grid.major.y=element_blank(),
+        panel.grid.minor.y=element_blank(),
+        axis.title.y=element_text(size=9),
+        axis.title.x=element_blank(),
+        axis.text.y=element_text(size=8))
+ms_legend <- all_metrics_labs |>
+  filter(!grepl("null", sim)) |>
+  mutate(label=factor(label, levels=unique(label)),
+         lab_short=factor(lab_short, levels=unique(lab_short))) |>
+  ggplot() +
+  geom_text(aes(type, value, label=label, colour=lab_short),
+            hjust=0, nudge_x=-0.15, vjust=0.5, size=2.5, parse=T) +
+  geom_point(position=position_nudge(x=-0.35), stroke=0.7,
+             aes(type, value, colour=lab_short, shape=lab_short, size=lab_short)) +
+  scale_colour_manual(values=modType3_cols) +
+  scale_shape_manual(values=c(1, 1, 1, 4, 3) |> set_names(names(modType3_cols)[c(1:3,8:7)])) +
+  scale_size_manual(values=c(rep(2.5, 3), rep(1, 2)) |> set_names(names(modType3_cols)[c(1:3,7:8)])) +
+  ylim(0.575-0.5, 1.175+0.5) +
+  theme(legend.position="none",
+        plot.margin=margin(t=0, b=0, l=0, r=0),
+        panel.border=element_blank(),
+        axis.title=element_blank(),
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+
+p <- plot_grid(pAB, pC, ms_legend, nrow=1, labels=c("", "C", ""), rel_widths=c(1, 0.4, 0.2))
+ggsave("figs/pub_new/validation_metrics_CV_means_TRTsens.png", p, width=11, height=6)
