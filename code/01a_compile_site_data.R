@@ -316,7 +316,7 @@ out.df |>
 
 # farm catchment footprints and volumes
 mesh_sf <- st_read("data/WeStCOMS2_mesh.gpkg")
-connect_dist <- c(100, 250, 500) # radius in m
+connect_dist <- c(100) # radius in m
 for(i in connect_dist) {
   i_df <- mesh_sf |>
     st_intersection(read_csv("data/farm_sites.csv") |>
@@ -325,12 +325,12 @@ for(i in connect_dist) {
     mutate(area=st_area(.)) |>
     st_drop_geometry() |>
     mutate(vol=area*depth,
-           vol_30m=area*pmin(depth, 30)) |>
+           vol_20m=area*pmin(depth, 20)) |>
     group_by(sepaSite) |>
     summarise(i=list(i),
               area_m2=as.numeric(sum(area)),
               vol_m3=as.numeric(sum(vol)),
-              vol30m_m3=as.numeric(sum(vol_30m))) |>
+              vol20m_m3=as.numeric(sum(vol_20m))) |>
     left_join(read_csv("data/farm_sites.csv")) 
   i_df |>
     select(-i) |>

@@ -31,7 +31,7 @@ dirs <- switch(
              mesh="/home/sa04ts/hydro/meshes",
              hydro="/home/sa04ts/hydro/WeStCOMS2/Archive",
              jdk="/home/sa04ts/.jdks/jdk-23.0.1/bin/java",
-             jar="/home/sa04ts/biotracker/biotracker_v1-0-1.jar",
+             jar="/home/sa04ts/biotracker/biotracker_v1-0-0.jar",
              out=glue("{getwd()}/out/sim_2024-MarMay")),
   windows=list(proj=getwd(),
                mesh="E:/hydro",
@@ -83,7 +83,7 @@ walk(sim_seq,
        parallelThreadsHD=6,
        start_ymd=as.numeric(str_remove_all(start_date, "-")),
        numberOfDays=nDays,
-       nparts=50,
+       nparts=100,
        checkOpenBoundaries="true",
        # meshes and environment
        mesh1=glue("{dirs$mesh}/WeStCOMS2_mesh.nc"),
@@ -138,7 +138,7 @@ if(os=="windows") {
 } else {
   plan(multicore, workers=parallel_sims)
 }
-sim_seq <- sim_seq[-(1:19)]
+
 sim_sets <- split(sim_seq, rep(1:parallel_sims, length(sim_seq)/parallel_sims))
 foreach(j=1:parallel_sims, .options.future=list(globals=structure(TRUE, add="sim.i"))) %dofuture% {
   for(i in sim_sets[[j]]) {
